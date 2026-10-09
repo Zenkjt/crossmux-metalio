@@ -2,8 +2,10 @@
 
 namespace metalio_speaker_test {
 
-// One-shot hardware bring-up test for the Metalio E-Ink 4 local speaker path.
-// The test is intentionally independent of Bluetooth pairing/UI/audio feedback.
+// Explicit hardware bring-up test launched from the Metalio Audio Test app.
+void runTest();
+
+// Legacy boot-hook entry point. Kept as a no-op for source compatibility.
 void run();
 
 }  // namespace metalio_speaker_test
