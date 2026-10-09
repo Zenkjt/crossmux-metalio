@@ -23,8 +23,7 @@ enum class AppId : uint8_t {
   OpdsBrowser = 14,
   Calculator = 15,
   Woodfish = 16,
-  MetalioAudioTest = 17,
-  Count = 18,
+  Count = 17,
 };
 
 constexpr uint32_t appBit(const AppId id) { return uint32_t{1} << static_cast<uint8_t>(id); }
