@@ -58,6 +58,10 @@
 #include "util/Timezones.h"
 #include "util/UserGuide.h"
 
+#if FREEINK_DEVICE_METALIO_EINK4
+#include "metalio/MetalioSpeakerTest.h"
+#endif
+
 #if CROSSPOINT_VECTOR_FONTS
 // Rendering (incl. FreeType TTF rasterization) runs on the Arduino loop task.
 // The default 8 KB stack overflows inside FreeType's FT_Open_Face / variable-font
@@ -542,6 +546,11 @@ bool setupDisplayAndFonts(bool seamless = false, bool logSdFontLoadHeap = false)
 #endif
   renderer.begin();
   activityManager.begin();
+
+#if FREEINK_DEVICE_METALIO_EINK4
+  metalio_speaker_test::run();
+#endif
+  
   LOG_DBG("MAIN", "Display initialized");
 
   // Initialize font decompressor for compressed reader fonts
