@@ -50,6 +50,9 @@ constexpr AppEntry kAppEntries[] = {
     {AppId::PixelSwitch, StrId::STR_PIXEL_SWITCH_TITLE, UIIcon::PixelSwitch, &ActivityManager::goToPixelSwitch},
     {AppId::Calculator, StrId::STR_CALCULATOR_TITLE, UIIcon::Calculator, &ActivityManager::goToCalculator},
     {AppId::Woodfish, StrId::STR_WOODFISH_TITLE, UIIcon::Woodfish, &ActivityManager::goToWoodfish},
+    #if FREEINK_DEVICE_METALIO_EINK4
+    {AppId::MetalioAudioTest, StrId::STR_SOUND_FEEDBACK, UIIcon::Blocks, &ActivityManager::goToMetalioAudioTest},
+#endif
     {AppId::Standby, StrId::STR_STANDBY_TITLE, UIIcon::Standby, &ActivityManager::goToStandby},
 };
 
@@ -59,7 +62,6 @@ constexpr int visibleAppCount(const uint32_t hiddenMask) {
   int count = 0;
   for (const auto& app : kAppEntries) {
     if ((hiddenMask & appBit(app.id)) == 0) {
-      // cppcheck-suppress useStlAlgorithm
       ++count;
     }
   }
