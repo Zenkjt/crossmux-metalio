@@ -3,6 +3,7 @@
 #if FREEINK_DEVICE_METALIO_EINK4
 
 #include <Logging.h>
+#include <MetalioEInk4Board.h>
 #include <MetalioAudio.h>
 #include <driver/i2s_std.h>
 #include <freertos/FreeRTOS.h>
