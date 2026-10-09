@@ -56,7 +56,7 @@ void MetalioAudioTestActivity::render(RenderLock&&) {
   renderer.clearScreen();
   GUI.drawHeader(renderer,
                  Rect{0, metrics.topPadding, width, metrics.headerHeight},
-                 tr(STR_METALIO_AUDIO_TEST));
+                 tr(STR_SOUND_FEEDBACK));
 
   const int centerY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, centerY,
