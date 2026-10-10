@@ -8,70 +8,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Isolate PlatformIO toolchains
+        run: |
+          echo "PLATFORMIO_CORE_DIR=$RUNNER_TEMP/.platformio-$GITHUB_RUN_ID-$GITHUB_JOB" >> "$GITHUB_ENV"
+
+      - name: Use runner temporary directory
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
-      - name: Install PlatformIO
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install pioarduino
         run: |
-          python -m pip install --upgrade pip
-          pip install platformio
+          uv pip install --system -U pioarduino==6.2.0
+
+      - name: Prepare pioarduino platform
+        run: |
+          python scripts/patch_pioarduino_cache.py --prepare-platform
 
       - name: Install Metalio audio dependency overlay
         run: |
           cp platformio.metalio-audio.ini platformio.local.ini
-
-      - name: Vendor Opus 1.6.1
-        run: |
-          rm -rf lib/codec-opus
-          mkdir -p lib/codec-opus
-          git clone --depth 1 --branch v1.6.1             https://github.com/pschatzmann/codec-opus.git             /tmp/codec-opus
-          cp -R /tmp/codec-opus/src/. lib/codec-opus/
-          rm -f lib/codec-opus/library.properties
-          rm -f lib/codec-opus/CMakeLists.txt
-          rm -f lib/codec-opus/README.md
-
-      - name: Vendor NimBLE-Arduino 2.3.8
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf lib/NimBLE-Arduino
-          mkdir -p lib/NimBLE-Arduino
-
-          # Remove the PlatformIO registry dependency everywhere it may be
-          # inherited from CrossMux/freeink-sdk BLE configuration.
-          grep -RIl --exclude-dir=.git \
-            'h2zero/NimBLE-Arduino' \
-            platformio.ini platformio.local.ini freeink-sdk 2>/dev/null |
-          while IFS= read -r file; do
-            echo "Removing NimBLE registry dependency from: $file"
-            sed -i '/h2zero\/NimBLE-Arduino/d' "$file"
-          done
-
-          # Make sure no registry dependency remains.
-          if grep -RIn --exclude-dir=.git \
-            'h2zero/NimBLE-Arduino' \
-            platformio.ini platformio.local.ini freeink-sdk 2>/dev/null; then
-            echo "ERROR: NimBLE PlatformIO registry dependency still present"
-            exit 1
-          fi
-
-          git clone --depth 1 --branch 2.3.8 \
-            https://github.com/h2zero/NimBLE-Arduino.git \
-            /tmp/NimBLE-Arduino
-
-          cp -a /tmp/NimBLE-Arduino/src/. lib/NimBLE-Arduino/
-
-          rm -f lib/NimBLE-Arduino/library.properties
-          rm -f lib/NimBLE-Arduino/CMakeLists.txt
-          rm -f lib/NimBLE-Arduino/README.md
 
       - name: Build Metalio firmware
         run: |
@@ -85,15 +56,21 @@ jobs:
         id: boot_app0
         shell: bash
         run: |
+          set -euo pipefail
+
           BOOT_APP0="$(find . -type f -name boot_app0.bin | head -n 1)"
+
           if [ -z "$BOOT_APP0" ]; then
             echo "boot_app0.bin not found"
             exit 1
           fi
+
           echo "path=$BOOT_APP0" >> "$GITHUB_OUTPUT"
 
       - name: Assemble full flash image
         run: |
+          set -euo pipefail
+
           BOOTLOADER=".pio/build/metalio_eink4/bootloader.bin"
           PARTITIONS=".pio/build/metalio_eink4/partitions.bin"
           FIRMWARE=".pio/build/metalio_eink4/firmware.bin"
@@ -106,12 +83,23 @@ jobs:
             fi
           done
 
-          esptool merge_bin             -o metalio-eink4-full.bin             --chip esp32s3             --flash_mode dio             --flash_size 16MB             0x0000 "$BOOTLOADER"             0x8000 "$PARTITIONS"             0xe000 "$BOOT_APP0"             0x10000 "$FIRMWARE"
+          esptool merge_bin \
+            -o metalio-eink4-full.bin \
+            --chip esp32s3 \
+            --flash_mode dio \
+            --flash_size 16MB \
+            0x0000 "$BOOTLOADER" \
+            0x8000 "$PARTITIONS" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$FIRMWARE"
 
       - name: Generate SHA-256
         run: |
-          sha256sum metalio-eink4-full.bin | tee metalio-eink4-full.bin.sha256
-          sha256sum .pio/build/metalio_eink4/firmware.bin | tee metalio-eink4-firmware.bin.sha256
+          sha256sum metalio-eink4-full.bin \
+            | tee metalio-eink4-full.bin.sha256
+
+          sha256sum .pio/build/metalio_eink4/firmware.bin \
+            | tee metalio-eink4-firmware.bin.sha256
 
       - name: Upload full firmware
         uses: actions/upload-artifact@v4
