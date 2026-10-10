@@ -45,21 +45,23 @@ jobs:
           rm -rf lib/NimBLE-Arduino
           mkdir -p lib/NimBLE-Arduino
 
-          python - <<'PY'
-          from pathlib import Path
+          # Remove the PlatformIO registry dependency everywhere it may be
+          # inherited from CrossMux/freeink-sdk BLE configuration.
+          grep -RIl --exclude-dir=.git \
+            'h2zero/NimBLE-Arduino' \
+            platformio.ini platformio.local.ini freeink-sdk 2>/dev/null |
+          while IFS= read -r file; do
+            echo "Removing NimBLE registry dependency from: $file"
+            sed -i '/h2zero\/NimBLE-Arduino/d' "$file"
+          done
 
-          for name in ("platformio.ini", "platformio.local.ini"):
-              path = Path(name)
-              if not path.exists():
-                  continue
-
-              lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-              filtered = [
-                  line for line in lines
-                  if "h2zero/NimBLE-Arduino" not in line.strip()
-              ]
-              path.write_text("".join(filtered), encoding="utf-8")
-          PY
+          # Make sure no registry dependency remains.
+          if grep -RIn --exclude-dir=.git \
+            'h2zero/NimBLE-Arduino' \
+            platformio.ini platformio.local.ini freeink-sdk 2>/dev/null; then
+            echo "ERROR: NimBLE PlatformIO registry dependency still present"
+            exit 1
+          fi
 
           git clone --depth 1 --branch 2.3.8 \
             https://github.com/h2zero/NimBLE-Arduino.git \
