@@ -98,6 +98,7 @@ bool outputBusy = false;
 // Serialize only the short hardware lifecycle transitions. PCM I/O itself
 // never holds this mutex, so microphone and speaker can stream concurrently.
 std::mutex hardwareLifecycleMutex;
+std::mutex taskLifecycleMutex;
 
 bool startInputCodec() {
   std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
@@ -391,9 +392,12 @@ bool waitTasksStopped(uint32_t timeoutMs) {
 }
 
 bool ensureStarted() {
+  std::lock_guard<std::mutex> lifecycleLock(taskLifecycleMutex);
+
   {
     std::lock_guard<std::mutex> lock(queueMutex);
     if (started) return true;
+    if (inputTaskHandle || outputTaskHandle || opusTaskHandle) return false;
     stopRequested = false;
   }
 
@@ -434,7 +438,9 @@ bool ensureStarted() {
       stopRequested = true;
     }
     queueCv.notify_all();
-    (void)waitTasksStopped(kStopTimeoutMs);
+    if (!waitTasksStopped(kStopTimeoutMs)) {
+      LOG_ERR("METALIO-AUDIO", "audio tasks did not stop cleanly");
+    }
     return false;
   }
   {
@@ -465,6 +471,7 @@ void stop() {
 
   if (!waitTasksStopped(kStopTimeoutMs)) {
     LOG_ERR("METALIO-AUDIO", "audio tasks did not stop cleanly");
+    return;
   }
 
   std::deque<std::shared_ptr<PlaybackRequest>> dropped;

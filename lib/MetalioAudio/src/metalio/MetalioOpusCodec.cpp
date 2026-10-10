@@ -7,13 +7,12 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 
 namespace metalio_opus {
 namespace {
-
 constexpr const char* kTag = "METALIO-OPUS";
-
-}  // namespace
+}
 
 Encoder::Encoder() {
   int error = OPUS_OK;
@@ -105,11 +104,18 @@ bool Decoder::decode(const uint8_t* packet, std::size_t packetBytes,
     return false;
   }
 
-  pcm.resize(kFrameSamples);
+  int samplesPerChannel = opus_packet_get_nb_samples(
+      packet, static_cast<opus_int32>(packetBytes), kSampleRate);
+  if (samplesPerChannel <= 0 || samplesPerChannel > kMaxDecoderSamples) {
+    LOG_ERR(kTag, "invalid Opus packet duration: %d", samplesPerChannel);
+    return false;
+  }
+
+  pcm.resize(static_cast<std::size_t>(samplesPerChannel));
   const int samples = opus_decode(
       static_cast<OpusDecoder*>(decoder_), packet,
       static_cast<opus_int32>(packetBytes), pcm.data(),
-      kFrameSamples, 0);
+      samplesPerChannel, 0);
   if (samples <= 0) {
     pcm.clear();
     LOG_ERR(kTag, "opus_decode failed: %d", samples);

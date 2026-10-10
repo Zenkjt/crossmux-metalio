@@ -11,6 +11,7 @@ constexpr int kChannels = 1;
 constexpr int kFrameDurationMs = 60;
 constexpr int kFrameSamples = kSampleRate * kFrameDurationMs / 1000;
 constexpr std::size_t kMaxPacketBytes = 1275;
+constexpr int kMaxDecoderSamples = 5760;
 
 class Encoder {
  public:
