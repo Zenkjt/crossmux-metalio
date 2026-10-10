@@ -3,69 +3,118 @@
 #if FREEINK_DEVICE_METALIO_EINK4
 
 #include <Logging.h>
-#include <MetalioEInk4Board.h>
-#include <MetalioAudio.h>
-#include <driver/i2s_std.h>
-#include <freertos/FreeRTOS.h>
+
+#include <cmath>
+#include <vector>
+
+#include "MetalioAudioCodec.h"
 
 namespace metalio_audio_service {
 namespace {
-constexpr uint32_t kSampleRate = 16000;
-constexpr uint8_t kVolume = 30;
-constexpr int16_t kAmplitude = 8000;
-constexpr size_t kFramesPerBuffer = 160;
-constexpr size_t kStereoSamplesPerBuffer = kFramesPerBuffer * 2;
-constexpr int kToneBuffers = 50;
-constexpr int kHalfPeriodSamples = 8;
-static int32_t toneBuffer[kStereoSamplesPerBuffer];
 
-void fillToneBuffer(size_t firstSample) {
-  for (size_t frame = 0; frame < kFramesPerBuffer; ++frame) {
-    const size_t sampleIndex = firstSample + frame;
-    const int16_t sample = ((sampleIndex / kHalfPeriodSamples) & 1U) ? -kAmplitude : kAmplitude;
-    const int32_t pcm = freeink::metalio::outputSample(sample, kVolume);
-    toneBuffer[frame * 2] = pcm;
-    toneBuffer[frame * 2 + 1] = pcm;
-  }
-}
+MetalioAudioCodec codec;
+
 }  // namespace
 
-void playTestTone() {
-  LOG_INF("METALIO-AUDIO", "Starting local speaker hardware test");
-  static int owner;
-  if (!freeink::metalio::acquireAudio(&owner, false)) {
-    LOG_ERR("METALIO-AUDIO", "Failed to acquire Metalio speaker audio bus");
-    return;
-  }
-  auto& bus = freeink::metalio::audioBus();
-  if (!freeink::metalio::startAudio(&owner, false)) {
-    LOG_ERR("METALIO-AUDIO", "Failed to start Metalio I2S TX");
-    freeink::metalio::releaseAudio(&owner, false);
-    return;
-  }
-  if (!freeink::metalio::setAmplifier(true)) {
-    LOG_ERR("METALIO-AUDIO", "Failed to enable local speaker amplifier");
-    freeink::metalio::stopAudio(&owner, false);
-    freeink::metalio::releaseAudio(&owner, false);
-    return;
-  }
-  bool ok = true;
-  for (int bufferIndex = 0; bufferIndex < kToneBuffers; ++bufferIndex) {
-    fillToneBuffer(static_cast<size_t>(bufferIndex) * kFramesPerBuffer);
-    size_t bytesWritten = 0;
-    const esp_err_t err = i2s_channel_write(bus.tx, toneBuffer, sizeof(toneBuffer), &bytesWritten, pdMS_TO_TICKS(100));
-    if (err != ESP_OK || bytesWritten != sizeof(toneBuffer)) {
-      LOG_ERR("METALIO-AUDIO", "I2S write failed: err=%d bytes=%u/%u", static_cast<int>(err), static_cast<unsigned>(bytesWritten), static_cast<unsigned>(sizeof(toneBuffer)));
-      ok = false;
-      break;
-    }
-  }
-  freeink::metalio::setAmplifier(false);
-  freeink::metalio::stopAudio(&owner, false);
-  freeink::metalio::releaseAudio(&owner, false);
-  LOG_INF("METALIO-AUDIO", "Local speaker test %s", ok ? "completed" : "failed");
+bool start() {
+  return codec.startOutput();
 }
+
+void stop() {
+  codec.stopOutput();
+}
+
+bool playPcm(const int16_t* samples, std::size_t count, uint32_t timeoutMs) {
+  if (samples == nullptr || count == 0) return false;
+
+  if (!codec.startOutput()) {
+    LOG_ERR("METALIO-AUDIO", "Failed to start Metalio speaker codec");
+    return false;
+  }
+
+  std::size_t offset = 0;
+  while (offset < count) {
+    const std::size_t written = codec.write(samples + offset, count - offset, timeoutMs);
+    if (written == 0) {
+      LOG_ERR("METALIO-AUDIO", "Metalio I2S output stalled at %u/%u samples",
+              static_cast<unsigned>(offset), static_cast<unsigned>(count));
+      codec.stopOutput();
+      return false;
+    }
+    offset += written;
+  }
+
+  codec.stopOutput();
+  return true;
+}
+
+bool recordPcm(std::vector<int16_t>& samples, std::size_t count, uint32_t timeoutMs) {
+  samples.resize(count);
+
+  if (!codec.startInput()) {
+    LOG_ERR("METALIO-AUDIO", "Failed to start Metalio microphone codec");
+    samples.clear();
+    return false;
+  }
+
+  std::size_t offset = 0;
+  while (offset < count) {
+    const std::size_t read = codec.read(samples.data() + offset, count - offset, timeoutMs);
+    if (read == 0) {
+      LOG_ERR("METALIO-AUDIO", "Metalio I2S input stalled at %u/%u samples",
+              static_cast<unsigned>(offset), static_cast<unsigned>(count));
+      codec.stopInput();
+      samples.clear();
+      return false;
+    }
+    offset += read;
+  }
+
+  codec.stopInput();
+  return true;
+}
+
+void setOutputVolume(uint8_t volume) {
+  codec.setOutputVolume(volume);
+}
+
+uint8_t outputVolume() {
+  return codec.outputVolume();
+}
+
+void playTestTone() {
+  constexpr uint32_t kSampleRate = 16000;
+  constexpr std::size_t kFrames = kSampleRate / 2;
+  constexpr double kFrequency = 1000.0;
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kAmplitude = 8000.0;
+
+  static std::vector<int16_t> tone(kFrames);
+  for (std::size_t i = 0; i < tone.size(); ++i) {
+    tone[i] = static_cast<int16_t>(
+        std::sin(2.0 * kPi * kFrequency * static_cast<double>(i) / kSampleRate) *
+        kAmplitude);
+  }
+
+  LOG_INF("METALIO-AUDIO", "Playing local 1 kHz speaker test");
+  playPcm(tone.data(), tone.size(), 1000);
+}
+
 }  // namespace metalio_audio_service
+
 #else
-namespace metalio_audio_service { void playTestTone() {} }
+
+namespace metalio_audio_service {
+bool start() { return false; }
+void stop() {}
+bool playPcm(const int16_t*, std::size_t, uint32_t) { return false; }
+bool recordPcm(std::vector<int16_t>& samples, std::size_t, uint32_t) {
+  samples.clear();
+  return false;
+}
+void setOutputVolume(uint8_t) {}
+uint8_t outputVolume() { return 0; }
+void playTestTone() {}
+}  // namespace metalio_audio_service
+
 #endif
