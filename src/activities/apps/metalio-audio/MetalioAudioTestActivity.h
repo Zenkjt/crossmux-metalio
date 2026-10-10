@@ -7,19 +7,31 @@
 
 class MetalioAudioTestActivity final : public UiListActivity {
  public:
-  MetalioAudioTestActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+  MetalioAudioTestActivity(
+      GfxRenderer& renderer,
+      MappedInputManager& mappedInput)
       : UiListActivity("MetalioAudioTest", renderer, mappedInput) {}
+
   ~MetalioAudioTestActivity() override = default;
 
   void onEnter() override;
   void onExit() override;
 
  protected:
-  int listCount() const override { return kActionCount; }
-  const char* headerTitle() const override { return "Metalio Audio Test"; }
+  int listCount() const override {
+    return kActionCount;
+  }
+
+  const char* headerTitle() const override {
+    return "Metalio Audio Test";
+  }
+
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
-  void onBackButton() override { finish(); }
+
+  void onBackButton() override {
+    finish();
+  }
 
  private:
   static constexpr int kSpeakerTest = 0;
@@ -30,9 +42,11 @@ class MetalioAudioTestActivity final : public UiListActivity {
 
   void rebuildRows();
   void setStatus(const char* text);
+
   bool runMicTest();
   bool runOpusLoopbackTest();
 
   std::array<freeink::ui::ListItem, kActionCount> rows{};
+
   char statusText[96] = "Ready";
 };
