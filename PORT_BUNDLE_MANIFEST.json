@@ -1,0 +1,7 @@
+{
+  "base_head": "437c8adaafc927c55be106ab72fd3ae94b442f17",
+  "opus_dependency": "pschatzmann/codec-opus @ 1.6.1",
+  "scope": "Layer 1 Metalio hardware baseline + Layer 2 full audio + Layer 3 Ogg Opus music/recorder",
+  "checkpoint": false,
+  "host_syntax_check": "passed for MetalioAudioService.cpp, MetalioOpusCodec.cpp, MetalioOggOpus.cpp with interface stubs"
+}
