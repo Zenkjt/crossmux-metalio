@@ -12,6 +12,6 @@
   "frameworks": ["arduino"],
   "platforms": ["espressif32"],
   "dependencies": {
-    "pschatzmann/codec-opus": "1.6.1"
+    "pschatzmann/codec-opus": "https://github.com/pschatzmann/codec-opus.git#1.6.1"
   }
 }
