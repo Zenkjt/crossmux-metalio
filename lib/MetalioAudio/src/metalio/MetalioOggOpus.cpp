@@ -56,7 +56,12 @@ bool writeOggPage(FILE* file, uint8_t headerType, uint64_t granule,
     return false;
   }
 
-  const std::size_t segmentCount = (packetBytes + 254) / 255;
+  // A packet whose size is an exact multiple of 255 needs a zero-length
+  // lacing segment to mark the end of the packet. Without that terminator,
+  // Ogg readers treat the next page as a continuation of this packet.
+  const std::size_t dataSegmentCount = (packetBytes + 254) / 255;
+  const bool needsTerminator = (packetBytes % 255) == 0;
+  const std::size_t segmentCount = dataSegmentCount + (needsTerminator ? 1 : 0);
   if (segmentCount == 0 || segmentCount > 255) return false;
 
   std::vector<uint8_t> page(27 + segmentCount + packetBytes, 0);
