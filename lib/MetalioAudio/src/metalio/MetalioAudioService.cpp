@@ -93,6 +93,31 @@ bool started = false;
 bool stopRequested = false;
 bool captureRunning = false;
 bool captureEncode = false;
+bool outputBusy = false;
+
+// Serialize only the short hardware lifecycle transitions. PCM I/O itself
+// never holds this mutex, so microphone and speaker can stream concurrently.
+std::mutex hardwareLifecycleMutex;
+
+bool startInputCodec() {
+  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  return inputCodec.startInput();
+}
+
+void stopInputCodec() {
+  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  inputCodec.stopInput();
+}
+
+bool startOutputCodec() {
+  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  return outputCodec.startOutput();
+}
+
+void stopOutputCodec() {
+  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  outputCodec.stopOutput();
+}
 
 void finishEncode(const std::shared_ptr<EncodeRequest>& request, bool success) {
   {
@@ -141,43 +166,52 @@ void inputTask(void*) {
       }
     }
 
-    if (!inputCodec.startInput()) {
+    if (!startInputCodec()) {
       LOG_ERR("METALIO-AUDIO", "microphone start failed");
       vTaskDelay(pdMS_TO_TICKS(50));
       continue;
     }
 
-    std::vector<int16_t> pcm(kFrameSamples);
-    std::size_t offset = 0;
-    while (offset < kFrameSamples) {
-      const std::size_t n = inputCodec.read(
-          pcm.data() + offset, kFrameSamples - offset, 1000);
-      if (n == 0) break;
-      offset += n;
-    }
-
-    if (offset != kFrameSamples) {
-      continue;
-    }
-
-    {
-      std::lock_guard<std::mutex> lock(queueMutex);
-      if (captureQueue.size() >= kMaxCaptureFrames) {
-        captureQueue.pop_front();
+    while (true) {
+      {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (stopRequested || !captureRunning) break;
       }
-      captureQueue.push_back(CaptureFrame{std::move(pcm)});
 
-      if (captureEncode && encodeQueue.size() < kMaxEncodeQueue) {
-        auto request = std::make_shared<EncodeRequest>();
-        request->target = EncodeTarget::SendQueue;
-        request->pcm = captureQueue.back().samples;
-        encodeQueue.push_back(std::move(request));
+      std::vector<int16_t> pcm(kFrameSamples);
+      std::size_t offset = 0;
+      while (offset < kFrameSamples) {
+        const std::size_t n = inputCodec.read(
+            pcm.data() + offset, kFrameSamples - offset, 1000);
+        if (n == 0) break;
+        offset += n;
       }
+
+      if (offset != kFrameSamples) {
+        continue;
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (captureQueue.size() >= kMaxCaptureFrames) {
+          captureQueue.pop_front();
+        }
+        captureQueue.push_back(CaptureFrame{std::move(pcm)});
+
+        if (captureEncode && encodeQueue.size() < kMaxEncodeQueue) {
+          auto request = std::make_shared<EncodeRequest>();
+          request->target = EncodeTarget::SendQueue;
+          request->pcm = captureQueue.back().samples;
+          encodeQueue.push_back(std::move(request));
+        }
+      }
+      queueCv.notify_all();
     }
-    queueCv.notify_all();
+
+    stopInputCodec();
   }
 
-  inputCodec.stopInput();
+  stopInputCodec();
   {
     std::lock_guard<std::mutex> lock(queueMutex);
     inputTaskHandle = nullptr;
@@ -200,16 +234,22 @@ void outputTask(void*) {
       if (!playbackQueue.empty()) {
         request = std::move(playbackQueue.front());
         playbackQueue.pop_front();
+        outputBusy = true;
       }
     }
 
     if (!request) continue;
     if (isCancelled(request)) {
       finishPlayback(request, false);
+      {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        outputBusy = false;
+      }
+      queueCv.notify_all();
       continue;
     }
 
-    bool success = outputCodec.startOutput();
+    bool success = startOutputCodec();
     if (success) {
       std::size_t offset = 0;
       while (offset < request->pcm.size()) {
@@ -227,15 +267,21 @@ void outputTask(void*) {
         }
         offset += written;
       }
-      outputCodec.stopOutput();
+      stopOutputCodec();
     }
 
     finishPlayback(request, success);
+    {
+      std::lock_guard<std::mutex> lock(queueMutex);
+      outputBusy = false;
+    }
+    queueCv.notify_all();
   }
 
-  outputCodec.stopOutput();
+  stopOutputCodec();
   {
     std::lock_guard<std::mutex> lock(queueMutex);
+    outputBusy = false;
     outputTaskHandle = nullptr;
   }
   queueCv.notify_all();
@@ -433,6 +479,7 @@ void stop() {
     captureQueue.clear();
     captureRunning = false;
     captureEncode = false;
+    outputBusy = false;
     started = false;
     stopRequested = false;
   }
@@ -488,6 +535,16 @@ bool playPcm(const int16_t* samples, std::size_t count,
   return request->success;
 }
 
+bool waitPlaybackDrained(uint32_t timeoutMs) {
+  std::unique_lock<std::mutex> lock(queueMutex);
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(timeoutMs);
+  return queueCv.wait_until(lock, deadline, [] {
+    return stopRequested || (playbackQueue.empty() && !outputBusy);
+  }) && !stopRequested;
+}
+
 void flushPlayback() {
   std::deque<std::shared_ptr<PlaybackRequest>> dropped;
   {
@@ -515,7 +572,6 @@ void stopCapture() {
     captureEncode = false;
     captureQueue.clear();
   }
-  inputCodec.stopInput();
   queueCv.notify_all();
 }
 
@@ -680,6 +736,7 @@ bool start() { return false; }
 void stop() {}
 bool playPcm(const int16_t*, std::size_t, uint32_t) { return false; }
 bool queuePcm(const int16_t*, std::size_t) { return false; }
+bool waitPlaybackDrained(uint32_t) { return false; }
 void flushPlayback() {}
 bool startCapture(bool) { return false; }
 void stopCapture() {}

@@ -4,7 +4,6 @@
 
 #include <Logging.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 #include <algorithm>
 #include <array>
@@ -187,7 +186,11 @@ bool recordFile(const char* path, uint32_t durationMs) {
         break;
       }
 
-      granule += metalio_opus::kFrameSamples;
+      // Ogg Opus granule positions are expressed in the Opus 48 kHz
+      // reference clock, regardless of the encoder's 16 kHz output rate.
+      constexpr uint64_t kOggOpusGranulePerFrame =
+          48000ULL * metalio_opus::kFrameDurationMs / 1000ULL;
+      granule += kOggOpusGranulePerFrame;
       if (!writeOggPage(file, 0x00, granule, kOggSerial, sequence++,
                         packet.data(), packet.size())) {
         ok = false;
@@ -290,14 +293,13 @@ bool playFile(const char* path) {
         break;
       }
 
-      if (!metalio_audio_service::queuePcm(pcm.data(), pcm.size())) {
-        // Back-pressure: play this frame synchronously if the queue is full.
-        if (!metalio_audio_service::playPcm(
-                pcm.data(), pcm.size(), 3000)) {
+      while (!metalio_audio_service::queuePcm(pcm.data(), pcm.size())) {
+        if (!metalio_audio_service::waitPlaybackDrained(1000)) {
           ok = false;
           break;
         }
       }
+      if (!ok) break;
     }
 
     if (!ok) break;
@@ -306,10 +308,11 @@ bool playFile(const char* path) {
 
   std::fclose(file);
   if (ok) {
-    // Give the asynchronous output queue enough time to drain.
-    vTaskDelay(pdMS_TO_TICKS(250));
+    ok = metalio_audio_service::waitPlaybackDrained(10000);
   }
-  metalio_audio_service::flushPlayback();
+  if (!ok) {
+    metalio_audio_service::flushPlayback();
+  }
 
   LOG_INF("METALIO-PLAY", "%s %s", ok ? "played" : "failed", path);
   return ok;

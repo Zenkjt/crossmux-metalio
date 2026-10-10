@@ -16,6 +16,8 @@ void stop();
 bool playPcm(const int16_t* samples, std::size_t count,
              uint32_t timeoutMs = 3000);
 bool queuePcm(const int16_t* samples, std::size_t count);
+// Wait until all queued and currently playing PCM has drained.
+bool waitPlaybackDrained(uint32_t timeoutMs = 5000);
 void flushPlayback();
 
 bool startCapture(bool encodeToOpus = false);
