@@ -37,6 +37,40 @@ jobs:
           rm -f lib/codec-opus/CMakeLists.txt
           rm -f lib/codec-opus/README.md
 
+      - name: Vendor NimBLE-Arduino 2.3.8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf lib/NimBLE-Arduino
+          mkdir -p lib/NimBLE-Arduino
+
+          python - <<'PY'
+          from pathlib import Path
+
+          for name in ("platformio.ini", "platformio.local.ini"):
+              path = Path(name)
+              if not path.exists():
+                  continue
+
+              lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+              filtered = [
+                  line for line in lines
+                  if "h2zero/NimBLE-Arduino" not in line.strip()
+              ]
+              path.write_text("".join(filtered), encoding="utf-8")
+          PY
+
+          git clone --depth 1 --branch 2.3.8 \
+            https://github.com/h2zero/NimBLE-Arduino.git \
+            /tmp/NimBLE-Arduino
+
+          cp -a /tmp/NimBLE-Arduino/src/. lib/NimBLE-Arduino/
+
+          rm -f lib/NimBLE-Arduino/library.properties
+          rm -f lib/NimBLE-Arduino/CMakeLists.txt
+          rm -f lib/NimBLE-Arduino/README.md
+
       - name: Build Metalio firmware
         run: |
           pio run -e metalio_eink4
