@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "description": "Metalio E-INK4 Layer-2 audio service and Layer-3 Ogg Opus music/recorder support",
   "keywords": ["metalio", "audio", "opus", "eink4"],
-  "repository": "https://github.com/Zenkjt/crossmux-metalio",
+  "repository": {
+  "type": "git",
+  "url": "https://github.com/Zenkjt/crossmux-metalio"
+                },
   "license": "BSD-3-Clause",
   "frameworks": ["arduino"],
   "platforms": ["espressif32"],
