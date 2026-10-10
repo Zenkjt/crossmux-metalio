@@ -7,9 +7,14 @@
 #include <driver/i2s_std.h>
 
 #include <algorithm>
-#include <vector>
+#include <array>
 
 namespace metalio_audio {
+namespace {
+
+constexpr std::size_t kIoChunkSamples = 960;  // 60 ms @ 16 kHz
+
+}  // namespace
 
 int MetalioAudioCodec::outputOwnerToken_;
 int MetalioAudioCodec::inputOwnerToken_;
@@ -71,40 +76,46 @@ std::size_t MetalioAudioCodec::write(const int16_t* samples, std::size_t count,
                                      uint32_t timeoutMs) {
   if (!outputStarted_ || samples == nullptr || count == 0) return 0;
 
-  std::vector<int32_t> stereo(count * 2);
-  for (std::size_t i = 0; i < count; ++i) {
-    const int32_t pcm = freeink::metalio::outputSample(samples[i], outputVolume_);
+  const std::size_t frames = std::min(count, kIoChunkSamples);
+  std::array<int32_t, kIoChunkSamples * 2> stereo{};
+
+  for (std::size_t i = 0; i < frames; ++i) {
+    const int32_t pcm =
+        freeink::metalio::outputSample(samples[i], outputVolume_);
     stereo[i * 2] = pcm;
     stereo[i * 2 + 1] = pcm;
   }
 
   auto& bus = freeink::metalio::audioBus();
-  size_t bytesWritten = 0;
+  std::size_t bytesWritten = 0;
   const esp_err_t err = i2s_channel_write(
-      bus.tx, stereo.data(), stereo.size() * sizeof(int32_t), &bytesWritten,
+      bus.tx, stereo.data(), frames * 2 * sizeof(int32_t), &bytesWritten,
       pdMS_TO_TICKS(timeoutMs));
   if (err != ESP_OK) return 0;
 
-  return bytesWritten / (2 * sizeof(int32_t));
+  return std::min(frames, bytesWritten / (2 * sizeof(int32_t)));
 }
 
 std::size_t MetalioAudioCodec::read(int16_t* samples, std::size_t count,
                                     uint32_t timeoutMs) {
   if (!inputStarted_ || samples == nullptr || count == 0) return 0;
 
-  std::vector<int32_t> pcm(count);
+  const std::size_t frames = std::min(count, kIoChunkSamples);
+  std::array<int32_t, kIoChunkSamples> pcm{};
+
   auto& bus = freeink::metalio::audioBus();
-  size_t bytesRead = 0;
+  std::size_t bytesRead = 0;
   const esp_err_t err = i2s_channel_read(
-      bus.rx, pcm.data(), pcm.size() * sizeof(int32_t), &bytesRead,
+      bus.rx, pcm.data(), frames * sizeof(int32_t), &bytesRead,
       pdMS_TO_TICKS(timeoutMs));
   if (err != ESP_OK) return 0;
 
-  const std::size_t frames = std::min(count, bytesRead / sizeof(int32_t));
-  for (std::size_t i = 0; i < frames; ++i) {
+  const std::size_t readFrames =
+      std::min(frames, bytesRead / sizeof(int32_t));
+  for (std::size_t i = 0; i < readFrames; ++i) {
     samples[i] = freeink::metalio::inputSample(pcm[i]);
   }
-  return frames;
+  return readFrames;
 }
 
 void MetalioAudioCodec::setOutputVolume(uint8_t volume) {
@@ -123,8 +134,12 @@ bool MetalioAudioCodec::startOutput() { return false; }
 void MetalioAudioCodec::stopOutput() {}
 bool MetalioAudioCodec::startInput() { return false; }
 void MetalioAudioCodec::stopInput() {}
-std::size_t MetalioAudioCodec::write(const int16_t*, std::size_t, uint32_t) { return 0; }
-std::size_t MetalioAudioCodec::read(int16_t*, std::size_t, uint32_t) { return 0; }
+std::size_t MetalioAudioCodec::write(const int16_t*, std::size_t, uint32_t) {
+  return 0;
+}
+std::size_t MetalioAudioCodec::read(int16_t*, std::size_t, uint32_t) {
+  return 0;
+}
 void MetalioAudioCodec::setOutputVolume(uint8_t volume) {
   outputVolume_ = volume > 100 ? 100 : volume;
 }

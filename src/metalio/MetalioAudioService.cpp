@@ -22,16 +22,20 @@ namespace metalio_audio_service {
 namespace {
 
 constexpr std::size_t kMaxPlaybackQueue = 4;
-constexpr std::size_t kMaxCaptureQueue = 4;
+constexpr std::size_t kMaxCaptureRequests = 4;
+constexpr std::size_t kMaxCaptureFrames = 4;
 constexpr std::size_t kCaptureFrameSamples = 960;  // 60 ms @ 16 kHz
+
 constexpr uint32_t kTaskStackWords = 4096;
 constexpr UBaseType_t kOutputTaskPriority = 4;
 constexpr UBaseType_t kInputTaskPriority = 5;
+constexpr uint32_t kTaskStopTimeoutMs = 1500;
 
 struct PlaybackRequest {
   std::vector<int16_t> pcm;
   bool completed = false;
   bool success = false;
+  bool cancelled = false;
   std::mutex mutex;
   std::condition_variable cv;
 };
@@ -40,7 +44,7 @@ struct CaptureRequest {
   std::size_t samples = 0;
 };
 
-struct PcmFrame {
+struct CaptureFrame {
   std::vector<int16_t> samples;
 };
 
@@ -51,7 +55,7 @@ std::mutex serviceMutex;
 std::condition_variable serviceCv;
 std::deque<std::shared_ptr<PlaybackRequest>> playbackQueue;
 std::deque<CaptureRequest> captureRequests;
-std::deque<PcmFrame> captureQueue;
+std::deque<CaptureFrame> captureQueue;
 
 TaskHandle_t outputTaskHandle = nullptr;
 TaskHandle_t inputTaskHandle = nullptr;
@@ -63,10 +67,24 @@ void completePlayback(const std::shared_ptr<PlaybackRequest>& request,
                       bool success) {
   {
     std::lock_guard<std::mutex> lock(request->mutex);
+    if (request->completed) return;
     request->success = success;
     request->completed = true;
   }
   request->cv.notify_all();
+}
+
+bool playbackCancelled(const std::shared_ptr<PlaybackRequest>& request) {
+  std::lock_guard<std::mutex> lock(request->mutex);
+  return request->cancelled;
+}
+
+void cancelPlayback(const std::shared_ptr<PlaybackRequest>& request) {
+  {
+    std::lock_guard<std::mutex> lock(request->mutex);
+    request->cancelled = true;
+  }
+  completePlayback(request, false);
 }
 
 void outputTask(void*) {
@@ -88,11 +106,20 @@ void outputTask(void*) {
     }
 
     if (!request) continue;
+    if (playbackCancelled(request)) {
+      completePlayback(request, false);
+      continue;
+    }
 
     bool success = outputCodec.startOutput();
     if (success) {
       std::size_t offset = 0;
       while (offset < request->pcm.size()) {
+        if (playbackCancelled(request)) {
+          success = false;
+          break;
+        }
+
         const std::size_t written =
             outputCodec.write(request->pcm.data() + offset,
                               request->pcm.size() - offset, 1000);
@@ -139,7 +166,7 @@ void inputTask(void*) {
       continue;
     }
 
-    PcmFrame frame;
+    CaptureFrame frame;
     frame.samples.resize(request.samples);
 
     std::size_t offset = 0;
@@ -157,7 +184,7 @@ void inputTask(void*) {
 
     {
       std::lock_guard<std::mutex> lock(serviceMutex);
-      if (captureQueue.size() >= kMaxCaptureQueue) {
+      if (captureQueue.size() >= kMaxCaptureFrames) {
         captureQueue.pop_front();
       }
       captureQueue.push_back(std::move(frame));
@@ -186,52 +213,67 @@ bool waitForTasksToStop(uint32_t timeoutMs) {
   });
 }
 
-}  // namespace
-
-bool start() {
+bool ensureServiceStarted() {
   {
     std::lock_guard<std::mutex> lock(serviceMutex);
     if (serviceStarted) return true;
-
     stopRequested = false;
-
-    if (xTaskCreate(outputTask, "metalio_audio_out", kTaskStackWords,
-                    nullptr, kOutputTaskPriority,
-                    &outputTaskHandle) != pdPASS) {
-      outputTaskHandle = nullptr;
-      LOG_ERR("METALIO-AUDIO", "Failed to create audio output task");
-      return false;
-    }
-
-    if (xTaskCreate(inputTask, "metalio_audio_in", kTaskStackWords,
-                    nullptr, kInputTaskPriority,
-                    &inputTaskHandle) != pdPASS) {
-      stopRequested = true;
-      serviceStarted = true;
-      LOG_ERR("METALIO-AUDIO", "Failed to create audio input task");
-    } else {
-      serviceStarted = true;
-      LOG_INF("METALIO-AUDIO", "Audio service started");
-      serviceCv.notify_all();
-      return true;
-    }
   }
 
-  serviceCv.notify_all();
-
-  if (!waitForTasksToStop(1500)) {
-    LOG_ERR("METALIO-AUDIO", "Audio output task did not stop cleanly");
+  TaskHandle_t outputHandle = nullptr;
+  if (xTaskCreate(outputTask, "metalio_audio_out", kTaskStackWords, nullptr,
+                  kOutputTaskPriority, &outputHandle) != pdPASS) {
+    LOG_ERR("METALIO-AUDIO", "Failed to create audio output task");
+    return false;
   }
 
   {
     std::lock_guard<std::mutex> lock(serviceMutex);
-    playbackQueue.clear();
-    captureRequests.clear();
-    captureQueue.clear();
-    serviceStarted = false;
-    stopRequested = false;
+    outputTaskHandle = outputHandle;
+    serviceStarted = true;
   }
-  return false;
+
+  TaskHandle_t inputHandle = nullptr;
+  if (xTaskCreate(inputTask, "metalio_audio_in", kTaskStackWords, nullptr,
+                  kInputTaskPriority, &inputHandle) != pdPASS) {
+    LOG_ERR("METALIO-AUDIO", "Failed to create audio input task");
+
+    {
+      std::lock_guard<std::mutex> lock(serviceMutex);
+      stopRequested = true;
+    }
+    serviceCv.notify_all();
+
+    if (!waitForTasksToStop(kTaskStopTimeoutMs)) {
+      LOG_ERR("METALIO-AUDIO",
+              "Audio output task did not stop after input task failure");
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(serviceMutex);
+      serviceStarted = false;
+      stopRequested = false;
+      playbackQueue.clear();
+      captureRequests.clear();
+      captureQueue.clear();
+    }
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(serviceMutex);
+    inputTaskHandle = inputHandle;
+  }
+
+  LOG_INF("METALIO-AUDIO", "PCM audio service started");
+  serviceCv.notify_all();
+  return true;
+}
+
+}  // namespace
+
+bool start() {
+  return ensureServiceStarted();
 }
 
 void stop() {
@@ -242,7 +284,7 @@ void stop() {
   }
   serviceCv.notify_all();
 
-  if (!waitForTasksToStop(1500)) {
+  if (!waitForTasksToStop(kTaskStopTimeoutMs)) {
     LOG_ERR("METALIO-AUDIO", "Audio tasks did not stop cleanly");
   }
 
@@ -258,14 +300,14 @@ void stop() {
   }
 
   for (auto& request : dropped) {
-    completePlayback(request, false);
+    cancelPlayback(request);
   }
 
-  LOG_INF("METALIO-AUDIO", "Audio service stopped");
+  LOG_INF("METALIO-AUDIO", "PCM audio service stopped");
 }
 
 bool queuePcm(const int16_t* samples, std::size_t count) {
-  if (!samples || count == 0 || !start()) return false;
+  if (!samples || count == 0 || !ensureServiceStarted()) return false;
 
   auto request = std::make_shared<PlaybackRequest>();
   request->pcm.assign(samples, samples + count);
@@ -284,7 +326,7 @@ bool queuePcm(const int16_t* samples, std::size_t count) {
 
 bool playPcm(const int16_t* samples, std::size_t count,
              uint32_t timeoutMs) {
-  if (!samples || count == 0 || !start()) return false;
+  if (!samples || count == 0 || !ensureServiceStarted()) return false;
 
   auto request = std::make_shared<PlaybackRequest>();
   request->pcm.assign(samples, samples + count);
@@ -302,6 +344,7 @@ bool playPcm(const int16_t* samples, std::size_t count,
   std::unique_lock<std::mutex> lock(request->mutex);
   if (!request->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
                             [&request] { return request->completed; })) {
+    request->cancelled = true;
     LOG_ERR("METALIO-AUDIO", "Playback request timed out");
     return false;
   }
@@ -318,38 +361,41 @@ void flushPlayback() {
   }
 
   for (auto& request : dropped) {
-    completePlayback(request, false);
+    cancelPlayback(request);
   }
 }
 
 bool startCapture() {
-  return start();
+  return ensureServiceStarted();
 }
 
 void stopCapture() {
   std::lock_guard<std::mutex> lock(serviceMutex);
   captureRequests.clear();
   captureQueue.clear();
-  serviceCv.notify_all();
 }
 
 bool readCapturedPcm(std::vector<int16_t>& samples,
                      std::size_t maxSamples,
                      uint32_t timeoutMs) {
   samples.clear();
-  if (maxSamples == 0 || !startCapture()) return false;
+  if (maxSamples == 0 || !ensureServiceStarted()) return false;
+
+  const std::size_t requested =
+      std::min(maxSamples, kCaptureFrameSamples);
 
   {
     std::lock_guard<std::mutex> lock(serviceMutex);
-    if (captureRequests.size() >= kMaxCaptureQueue) return false;
-    captureRequests.push_back(
-        CaptureRequest{std::min(maxSamples, kCaptureFrameSamples)});
+    if (stopRequested || captureRequests.size() >= kMaxCaptureRequests) {
+      return false;
+    }
+    captureRequests.push_back(CaptureRequest{requested});
   }
   serviceCv.notify_one();
 
   std::unique_lock<std::mutex> lock(serviceMutex);
   if (!serviceCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [] {
-        return !captureQueue.empty() || stopRequested;
+        return stopRequested || !captureQueue.empty();
       })) {
     return false;
   }
@@ -361,10 +407,17 @@ bool readCapturedPcm(std::vector<int16_t>& samples,
   return true;
 }
 
-bool recordPcm(std::vector<int16_t>& samples, std::size_t count,
+bool recordPcm(std::vector<int16_t>& samples,
+               std::size_t count,
                uint32_t timeoutMs) {
   samples.clear();
-  if (count == 0 || !startCapture()) return false;
+  if (count == 0 || !ensureServiceStarted()) return false;
+
+  samples.reserve(count);
+
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(timeoutMs);
 
   while (samples.size() < count) {
     const std::size_t wanted =
@@ -372,14 +425,16 @@ bool recordPcm(std::vector<int16_t>& samples, std::size_t count,
 
     {
       std::lock_guard<std::mutex> lock(serviceMutex);
-      if (captureRequests.size() >= kMaxCaptureQueue) return false;
+      if (stopRequested || captureRequests.size() >= kMaxCaptureRequests) {
+        return false;
+      }
       captureRequests.push_back(CaptureRequest{wanted});
     }
     serviceCv.notify_one();
 
     std::unique_lock<std::mutex> lock(serviceMutex);
-    if (!serviceCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [] {
-          return !captureQueue.empty() || stopRequested;
+    if (!serviceCv.wait_until(lock, deadline, [] {
+          return stopRequested || !captureQueue.empty();
         })) {
       return false;
     }
@@ -411,10 +466,16 @@ void playTestTone() {
   constexpr double kAmplitude = 8000.0;
 
   static std::vector<int16_t> tone(kFrames);
-  for (std::size_t i = 0; i < tone.size(); ++i) {
-    tone[i] = static_cast<int16_t>(
-        std::sin(2.0 * kPi * kFrequency *
-                 static_cast<double>(i) / kRate) * kAmplitude);
+  static bool initialized = false;
+
+  if (!initialized) {
+    for (std::size_t i = 0; i < tone.size(); ++i) {
+      tone[i] = static_cast<int16_t>(
+          std::sin(2.0 * kPi * kFrequency * static_cast<double>(i) /
+                   static_cast<double>(kRate)) *
+          kAmplitude);
+    }
+    initialized = true;
   }
 
   LOG_INF("METALIO-AUDIO", "Playing local 1 kHz speaker test");

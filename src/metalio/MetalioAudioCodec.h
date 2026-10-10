@@ -18,8 +18,10 @@ class MetalioAudioCodec {
   bool startInput();
   void stopInput();
 
-  std::size_t write(const int16_t* samples, std::size_t count, uint32_t timeoutMs = 1000);
-  std::size_t read(int16_t* samples, std::size_t count, uint32_t timeoutMs = 1000);
+  std::size_t write(const int16_t* samples, std::size_t count,
+                    uint32_t timeoutMs = 1000);
+  std::size_t read(int16_t* samples, std::size_t count,
+                   uint32_t timeoutMs = 1000);
 
   void setOutputVolume(uint8_t volume);
   uint8_t outputVolume() const { return outputVolume_; }
