@@ -1,114 +1,138 @@
 #include "MetalioAudioTestActivity.h"
 
-#include <I18n.h>
 #include <Logging.h>
 
-#include <string>
+#include <algorithm>
+#include <vector>
 
-#include "HalDisplay.h"
-#include "components/UITheme.h"
-#include "fontIds.h"
 #include "metalio/MetalioAudioService.h"
-#include "metalio/MetalioOggOpus.h"
 
-namespace {
-constexpr char kMusicPath[] = "/sdcard/metalio/e-ink/music/music.ogg";
-constexpr uint32_t kRecordingDurationMs = 10000;
-}
+namespace fui = freeink::ui;
 
 void MetalioAudioTestActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
+
+  std::fill(std::begin(statusText), std::end(statusText), '\0');
+  setStatus("Starting audio service...");
+
+  if (!metalio_audio_service::start()) {
+    setStatus("Audio service start FAILED");
+    LOG_ERR("MTAUD", "Metalio audio service start failed");
+    rebuildRows();
+    requestUpdate();
+    return;
+  }
+
+  setStatus("Ready");
+  rebuildRows();
   requestUpdate();
 }
 
-void MetalioAudioTestActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.goToApps();
-    return;
-  }
-
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int width = renderer.getScreenWidth();
-  const int top = metrics.topPadding + metrics.headerHeight +
-                  metrics.verticalSpacing;
-  const int rowH = metrics.menuRowHeight;
-
-  int touchX = 0;
-  int touchY = 0;
-  if (mappedInput.wasScreenTapped(touchX, touchY)) {
-    const int row = (touchY - top) / rowH;
-    if (touchX >= metrics.contentSidePadding &&
-        touchX < width - metrics.contentSidePadding &&
-        row >= 0 && row < 3) {
-      if (row == 0) {
-        GUI.drawPopup(renderer, "Playing music.ogg...");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        (void)metalio_ogg_opus::playFile(kMusicPath);
-      } else if (row == 1) {
-        GUI.drawPopup(renderer, "Recording 10 seconds...");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        const std::string path = metalio_ogg_opus::nextRecordingPath();
-        if (!path.empty()) {
-          (void)metalio_ogg_opus::recordFile(path.c_str(),
-                                             kRecordingDurationMs);
-        }
-      } else {
-        GUI.drawPopup(renderer, "Testing speaker...");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        metalio_audio_service::playTestTone();
-      }
-      requestUpdate();
-    }
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    GUI.drawPopup(renderer, "Testing speaker...");
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    metalio_audio_service::playTestTone();
-    requestUpdate();
-  }
+void MetalioAudioTestActivity::onExit() {
+  metalio_audio_service::stop();
+  UiListActivity::onExit();
 }
 
-void MetalioAudioTestActivity::render(RenderLock&&) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int width = renderer.getScreenWidth();
-  const int height = renderer.getScreenHeight();
+void MetalioAudioTestActivity::setStatus(const char* text) {
+  std::snprintf(statusText, sizeof(statusText), "%s", text ? text : "");
+}
 
-  renderer.clearScreen();
-  GUI.drawHeader(renderer,
-                 Rect{0, metrics.topPadding, width, metrics.headerHeight},
-                 tr(STR_SOUND_FEEDBACK));
+void MetalioAudioTestActivity::rebuildRows() {
+  rows[kSpeakerTest] = fui::ListItem{};
+  rows[kSpeakerTest].label = "Speaker: test tone";
+  rows[kSpeakerTest].actionValue = kSpeakerTest;
 
-  const int top = metrics.topPadding + metrics.headerHeight +
-                  metrics.verticalSpacing;
-  const int rowH = metrics.menuRowHeight;
+  rows[kMicTest] = fui::ListItem{};
+  rows[kMicTest].label = "Microphone: PCM capture";
+  rows[kMicTest].actionValue = kMicTest;
 
-  renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, top - 4,
-                    "Music: /metalio/e-ink/music/music.ogg");
+  rows[kOpusLoopbackTest] = fui::ListItem{};
+  rows[kOpusLoopbackTest].label = "Opus: mic -> opus -> speaker";
+  rows[kOpusLoopbackTest].actionValue = kOpusLoopbackTest;
 
-  const Rect play{metrics.contentSidePadding, top + 16, 
-                  width - 2 * metrics.contentSidePadding, rowH};
-  const Rect record{metrics.contentSidePadding, top + 16 + rowH,
-                    width - 2 * metrics.contentSidePadding, rowH};
-  const Rect tone{metrics.contentSidePadding, top + 16 + 2 * rowH,
-                  width - 2 * metrics.contentSidePadding, rowH};
+  rows[kStatusRow] = fui::ListItem{};
+  rows[kStatusRow].label = statusText;
+  rows[kStatusRow].actionValue = kStatusRow;
+}
 
-  renderer.drawRoundedRect(play.x, play.y, play.width, play.height, 2, 0, true);
-  renderer.drawRoundedRect(record.x, record.y, record.width, record.height, 2, 0, true);
-  renderer.drawRoundedRect(tone.x, tone.y, tone.width, tone.height, 2, 0, true);
+bool MetalioAudioTestActivity::runMicTest() {
+  std::vector<int16_t> samples;
+  if (!metalio_audio_service::recordPcm(samples, 960, 2000)) {
+    LOG_ERR("MTAUD", "Microphone PCM capture failed");
+    return false;
+  }
 
-  renderer.drawText(UI_12_FONT_ID, play.x + 12,
-                    play.y + (play.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2,
-                    "PLAY MUSIC.OGG", false);
-  renderer.drawText(UI_12_FONT_ID, record.x + 12,
-                    record.y + (record.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2,
-                    "RECORD 10 SEC", false);
-  renderer.drawText(UI_12_FONT_ID, tone.x + 12,
-                    tone.y + (tone.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2,
-                    "1 KHZ SPEAKER TEST", false);
+  if (samples.empty()) {
+    LOG_ERR("MTAUD", "Microphone PCM capture returned no samples");
+    return false;
+  }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  int16_t peak = 0;
+  for (const int16_t sample : samples) {
+    peak = std::max<int16_t>(peak, sample < 0 ? static_cast<int16_t>(-sample) : sample);
+  }
+
+  LOG_INF("MTAUD", "MIC OK: %u samples, peak=%d",
+          static_cast<unsigned>(samples.size()), static_cast<int>(peak));
+  return true;
+}
+
+bool MetalioAudioTestActivity::runOpusLoopbackTest() {
+  std::vector<int16_t> pcm;
+  if (!metalio_audio_service::recordPcm(pcm, 960, 2000) || pcm.size() != 960) {
+    LOG_ERR("MTAUD", "Opus test: PCM capture failed");
+    return false;
+  }
+
+  std::vector<uint8_t> packet;
+  if (!metalio_audio_service::encodePcmFrame(pcm.data(), pcm.size(), packet) || packet.empty()) {
+    LOG_ERR("MTAUD", "Opus test: encode failed");
+    return false;
+  }
+
+  std::vector<int16_t> decoded;
+  if (!metalio_audio_service::decodeOpusPacket(packet.data(), packet.size(), decoded) || decoded.empty()) {
+    LOG_ERR("MTAUD", "Opus test: decode failed");
+    return false;
+  }
+
+  if (!metalio_audio_service::playPcm(decoded.data(), decoded.size(), 3000)) {
+    LOG_ERR("MTAUD", "Opus test: speaker playback failed");
+    return false;
+  }
+
+  LOG_INF("MTAUD", "OPUS OK: %u bytes -> %u samples",
+          static_cast<unsigned>(packet.size()), static_cast<unsigned>(decoded.size()));
+  return true;
+}
+
+void MetalioAudioTestActivity::activateIndex(const int index) {
+  if (index == kStatusRow) return;
+
+  app.clearTapFlash();
+
+  bool ok = false;
+  if (index == kSpeakerTest) {
+    setStatus("Playing test tone...");
+    rebuildRows();
+    requestUpdate();
+    metalio_audio_service::playTestTone();
+    setStatus("Speaker test: PASS");
+    ok = true;
+  } else if (index == kMicTest) {
+    setStatus("Capturing microphone...");
+    rebuildRows();
+    requestUpdate();
+    ok = runMicTest();
+    setStatus(ok ? "Microphone test: PASS" : "Microphone test: FAIL");
+  } else if (index == kOpusLoopbackTest) {
+    setStatus("Running Opus loopback...");
+    rebuildRows();
+    requestUpdate();
+    ok = runOpusLoopbackTest();
+    setStatus(ok ? "Opus loopback: PASS" : "Opus loopback: FAIL");
+  }
+
+  rebuildRows();
+  requestUpdate();
 }

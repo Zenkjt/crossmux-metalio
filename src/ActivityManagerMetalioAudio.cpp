@@ -1,4 +1,4 @@
-#include "ActivityManager.h"
+#include "activities/ActivityManager.h"
 
 #include "apps/metalio-audio/MetalioAudioTestActivity.h"
 
