@@ -27,6 +27,16 @@ jobs:
         run: |
           cp platformio.metalio-audio.ini platformio.local.ini
 
+      - name: Vendor Opus 1.6.1
+        run: |
+          rm -rf lib/codec-opus
+          mkdir -p lib/codec-opus
+          git clone --depth 1 --branch v1.6.1             https://github.com/pschatzmann/codec-opus.git             /tmp/codec-opus
+          cp -R /tmp/codec-opus/src/. lib/codec-opus/
+          rm -f lib/codec-opus/library.properties
+          rm -f lib/codec-opus/CMakeLists.txt
+          rm -f lib/codec-opus/README.md
+
       - name: Build Metalio firmware
         run: |
           pio run -e metalio_eink4
