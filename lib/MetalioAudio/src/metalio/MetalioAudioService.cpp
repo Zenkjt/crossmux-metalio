@@ -27,8 +27,16 @@
 //   decode queue -> Opus task -> playback queue -> output task -> Metalio speaker
 //
 // The Metalio codec remains the board-specific I2S/UART/amplifier adapter. Audio
-// is started on demand by the test Activity, not at boot. As in Zao, audio task
-// stacks are allocated from SPIRAM; FreeRTOS task control data stays internal.
+// is started on demand by the test Activity, not at boot.
+//
+// Task-memory architecture follows Zao:
+//   - input/output task stacks: 8 KiB each in SPIRAM
+//   - Opus task stack: 128 KiB in SPIRAM, allocated explicitly
+//   - Opus TCB: internal RAM
+//   - caps-created tasks are deleted with vTaskDeleteWithCaps()
+//
+// Audio buffers remain separate from task stacks so future longer recording and
+// music playback can grow the pipeline without blindly inflating task stacks.
 
 namespace metalio_audio_service {
 namespace {
@@ -40,10 +48,11 @@ constexpr std::size_t kMaxSendQueue = 32;
 constexpr std::size_t kMaxCaptureFrames = 4;
 constexpr std::size_t kFrameSamples = metalio_opus::kFrameSamples;
 
-// Stack sizes are in FreeRTOS stack words, as for xTaskCreate(). Each task's
-// stack is 16 KiB on ESP32-S3; the large I2S conversion buffer lives on the
-// output task's SPIRAM stack instead of consuming scarce internal DRAM.
-constexpr uint32_t kTaskStackWords = 4096;
+constexpr uint32_t kInputOutputTaskStackBytes = 8 * 1024;
+constexpr std::size_t kOpusTaskStackBytes = 128 * 1024;
+constexpr std::size_t kOpusTaskStackWords =
+    kOpusTaskStackBytes / sizeof(StackType_t);
+
 constexpr UBaseType_t kInputPriority = 5;
 constexpr UBaseType_t kOutputPriority = 4;
 constexpr UBaseType_t kOpusPriority = 3;
@@ -102,6 +111,9 @@ std::deque<CaptureFrame> captureQueue;
 TaskHandle_t inputTaskHandle = nullptr;
 TaskHandle_t outputTaskHandle = nullptr;
 TaskHandle_t opusTaskHandle = nullptr;
+
+StackType_t* opusTaskStack = nullptr;
+StaticTask_t* opusTaskTcb = nullptr;
 
 bool started = false;
 bool stopRequested = false;
@@ -164,15 +176,18 @@ void cancelPlayback(const std::shared_ptr<PlaybackRequest>& request) {
   finishPlayback(request, false);
 }
 
-void markTaskExited(TaskHandle_t* handle) {
+void markTaskExited(TaskHandle_t* handle, bool capsAllocated) {
   {
     std::lock_guard<std::mutex> lock(queueMutex);
     *handle = nullptr;
   }
   queueCv.notify_all();
-  // A short settle period in stop()/startup rollback prevents a new service
-  // start racing the old task between clearing its handle and self-deletion.
-  vTaskDelete(nullptr);
+
+  if (capsAllocated) {
+    vTaskDeleteWithCaps(nullptr);
+  } else {
+    vTaskDelete(nullptr);
+  }
 }
 
 void inputTask(void*) {
@@ -228,7 +243,7 @@ void inputTask(void*) {
   }
 
   stopInputCodec();
-  markTaskExited(&inputTaskHandle);
+  markTaskExited(&inputTaskHandle, true);
 }
 
 void outputTask(void*) {
@@ -296,7 +311,7 @@ void outputTask(void*) {
     std::lock_guard<std::mutex> lock(queueMutex);
     outputBusy = false;
   }
-  markTaskExited(&outputTaskHandle);
+  markTaskExited(&outputTaskHandle, true);
 }
 
 void opusTask(void*) {
@@ -387,7 +402,7 @@ void opusTask(void*) {
     std::lock_guard<std::mutex> lock(queueMutex);
     decodeBusy = false;
   }
-  markTaskExited(&opusTaskHandle);
+  markTaskExited(&opusTaskHandle, false);
 }
 
 bool waitTasksStopped(uint32_t timeoutMs) {
@@ -398,6 +413,17 @@ bool waitTasksStopped(uint32_t timeoutMs) {
     return inputTaskHandle == nullptr && outputTaskHandle == nullptr &&
            opusTaskHandle == nullptr;
   });
+}
+
+void freeOpusTaskMemory() {
+  if (opusTaskStack != nullptr) {
+    heap_caps_free(opusTaskStack);
+    opusTaskStack = nullptr;
+  }
+  if (opusTaskTcb != nullptr) {
+    heap_caps_free(opusTaskTcb);
+    opusTaskTcb = nullptr;
+  }
 }
 
 void requestStopAndWait(const char* reason) {
@@ -414,6 +440,7 @@ void requestStopAndWait(const char* reason) {
     return;
   }
   vTaskDelay(pdMS_TO_TICKS(30));
+  freeOpusTaskMemory();
   {
     std::lock_guard<std::mutex> lock(queueMutex);
     started = false;
@@ -434,8 +461,9 @@ bool ensureStarted() {
   }
 
   TaskHandle_t input = nullptr;
-  if (xTaskCreateWithCaps(inputTask, "metalio_audio_in", kTaskStackWords,
-                          nullptr, kInputPriority, &input, kStackCaps) != pdPASS) {
+  if (xTaskCreateWithCaps(inputTask, "metalio_audio_in",
+                          kInputOutputTaskStackBytes, nullptr, kInputPriority,
+                          &input, kStackCaps) != pdPASS) {
     LOG_ERR("METALIO-AUDIO",
             "failed to create input task (SPIRAM free=%u largest=%u)",
             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
@@ -448,8 +476,9 @@ bool ensureStarted() {
   }
 
   TaskHandle_t output = nullptr;
-  if (xTaskCreateWithCaps(outputTask, "metalio_audio_out", kTaskStackWords,
-                          nullptr, kOutputPriority, &output, kStackCaps) != pdPASS) {
+  if (xTaskCreateWithCaps(outputTask, "metalio_audio_out",
+                          kInputOutputTaskStackBytes, nullptr, kOutputPriority,
+                          &output, kStackCaps) != pdPASS) {
     LOG_ERR("METALIO-AUDIO", "failed to create output task");
     requestStopAndWait("output task creation rollback");
     return false;
@@ -459,20 +488,41 @@ bool ensureStarted() {
     outputTaskHandle = output;
   }
 
-  TaskHandle_t opus = nullptr;
-  if (xTaskCreateWithCaps(opusTask, "metalio_opus", kTaskStackWords,
-                          nullptr, kOpusPriority, &opus, kStackCaps) != pdPASS) {
+  opusTaskStack = static_cast<StackType_t*>(
+      heap_caps_malloc(kOpusTaskStackWords * sizeof(StackType_t), kStackCaps));
+  opusTaskTcb = static_cast<StaticTask_t*>(
+      heap_caps_malloc(sizeof(StaticTask_t),
+                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
+  if (opusTaskStack == nullptr || opusTaskTcb == nullptr) {
+    LOG_ERR("METALIO-AUDIO",
+            "failed to allocate Opus task memory (stack=%u bytes, SPIRAM free=%u largest=%u)",
+            static_cast<unsigned>(kOpusTaskStackBytes),
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+    freeOpusTaskMemory();
+    requestStopAndWait("Opus task memory allocation rollback");
+    return false;
+  }
+
+  opusTaskHandle = xTaskCreateStatic(
+      opusTask, "metalio_opus", kOpusTaskStackWords, nullptr, kOpusPriority,
+      opusTaskStack, opusTaskTcb);
+
+  if (opusTaskHandle == nullptr) {
     LOG_ERR("METALIO-AUDIO", "failed to create Opus task");
+    freeOpusTaskMemory();
     requestStopAndWait("Opus task creation rollback");
     return false;
   }
+
   {
     std::lock_guard<std::mutex> lock(queueMutex);
-    opusTaskHandle = opus;
     started = true;
   }
 
-  LOG_INF("METALIO-AUDIO", "audio service started: input/output/Opus tasks (SPIRAM stacks)");
+  LOG_INF("METALIO-AUDIO",
+          "audio service started: input/output 8 KiB SPIRAM stacks, Opus 128 KiB SPIRAM stack");
   queueCv.notify_all();
   return true;
 }
@@ -508,6 +558,8 @@ void stop() {
     return;
   }
   vTaskDelay(pdMS_TO_TICKS(30));
+
+  freeOpusTaskMemory();
 
   {
     std::lock_guard<std::mutex> lock(queueMutex);
