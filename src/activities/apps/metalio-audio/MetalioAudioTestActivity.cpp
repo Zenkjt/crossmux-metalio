@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 #include "MetalioAudioService.h"
-#include "graphics/GfxRenderer.h"
+
 #include "ui/UiScreen.h"
 
 namespace {
