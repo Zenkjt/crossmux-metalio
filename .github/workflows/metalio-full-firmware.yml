@@ -85,7 +85,6 @@ jobs:
 
           esptool merge-bin \
             -o metalio-eink4-full.bin \
-           
             --flash-mode dio \
             --flash-size 16MB \
             0x0000 "$BOOTLOADER" \
