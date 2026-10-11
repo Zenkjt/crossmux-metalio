@@ -543,9 +543,6 @@ bool setupDisplayAndFonts(bool seamless = false, bool logSdFontLoadHeap = false)
   renderer.begin();
   activityManager.begin();
 
-#if FREEINK_DEVICE_METALIO_EINK4
-  metalio_speaker_test::run();
-#endif
   
   LOG_DBG("MAIN", "Display initialized");
 
