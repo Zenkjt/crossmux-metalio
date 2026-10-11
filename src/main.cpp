@@ -58,10 +58,6 @@
 #include "util/Timezones.h"
 #include "util/UserGuide.h"
 
-#if FREEINK_DEVICE_METALIO_EINK4
-#include "metalio/MetalioSpeakerTest.h"
-#endif
-
 #if CROSSPOINT_VECTOR_FONTS
 // Rendering (incl. FreeType TTF rasterization) runs on the Arduino loop task.
 // The default 8 KB stack overflows inside FreeType's FT_Open_Face / variable-font
