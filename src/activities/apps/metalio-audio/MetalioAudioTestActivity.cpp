@@ -6,6 +6,7 @@
 
 #include "MetalioAudioService.h"
 
+namespace fui = freeink::ui;
 namespace {
 constexpr const char* TAG = "MTAUD";
 }
@@ -37,13 +38,13 @@ void MetalioAudioTestActivity::setStatus(const char* text) {
   strncpy(statusText, text, sizeof(statusText) - 1);
   statusText[sizeof(statusText) - 1] = '\0';
   rebuildRows();
-  requestRender();
+  requestUpdate();
 }
 
 void MetalioAudioTestActivity::buildScreen(UiScreen& screen) {
   const int sw = renderer.getScreenWidth();
   const int sh = renderer.getScreenHeight();
-  const Rect content = appContentRect();
+  const Rect content = pageContentRect();
 
   screen.setContentMarginFromScreen(
       fui::Insets{
