@@ -1,6 +1,8 @@
 #include "MetalioAudioTestActivity.h"
 
 #include <Arduino.h>
+#include <cstring>
+#include <vector>
 
 #include "MetalioAudioService.h"
 
