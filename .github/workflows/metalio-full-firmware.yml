@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BOOT_APP0="$(find . -type f -name boot_app0.bin | head -n 1)"
+          BOOT_APP0="$PLATFORMIO_CORE_DIR/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
 
           if [ -z "$BOOT_APP0" ]; then
             echo "boot_app0.bin not found"
