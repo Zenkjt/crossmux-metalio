@@ -2,8 +2,9 @@
 
 #if FREEINK_DEVICE_METALIO_EINK4
 
-#include <MetalioAudio.h>
 #include <MetalioEInk4Board.h>
+#include <MetalioAudio.h>
+
 #include <driver/i2s_std.h>
 
 #include <algorithm>
