@@ -83,11 +83,11 @@ jobs:
             fi
           done
 
-          esptool merge_bin \
+          esptool merge-bin \
             -o metalio-eink4-full.bin \
            
-            --flash_mode dio \
-            --flash_size 16MB \
+            --flash-mode dio \
+            --flash-size 16MB \
             0x0000 "$BOOTLOADER" \
             0x8000 "$PARTITIONS" \
             0xe000 "$BOOT_APP0" \
