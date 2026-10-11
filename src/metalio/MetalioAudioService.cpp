@@ -48,8 +48,8 @@ struct CaptureFrame {
   std::vector<int16_t> samples;
 };
 
-MetalioAudioCodec outputCodec;
-MetalioAudioCodec inputCodec;
+metalio_audio::MetalioAudioCodec outputCodec;
+metalio_audio::MetalioAudioCodec inputCodec;
 
 std::mutex serviceMutex;
 std::condition_variable serviceCv;
