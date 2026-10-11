@@ -1,6 +1,9 @@
 #include "MetalioAudioTestActivity.h"
 
 #include <Arduino.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -11,6 +14,10 @@ namespace fui = freeink::ui;
 namespace {
 
 constexpr const char* TAG = "MTAUD";
+constexpr uint32_t kSampleRate = 16000;
+constexpr std::size_t kToneSamples = 6400;  // 400 ms
+constexpr float kToneFrequencyHz = 1000.0f;
+constexpr float kPi = 3.14159265358979323846f;
 
 }  // namespace
 
@@ -53,11 +60,7 @@ void MetalioAudioTestActivity::setStatus(const char* text) {
   if (text == nullptr) {
     statusText[0] = '\0';
   } else {
-    std::strncpy(
-        statusText,
-        text,
-        sizeof(statusText) - 1);
-
+    std::strncpy(statusText, text, sizeof(statusText) - 1);
     statusText[sizeof(statusText) - 1] = '\0';
   }
 
@@ -100,38 +103,54 @@ void MetalioAudioTestActivity::activateIndex(int index) {
 
   switch (index) {
     case kSpeakerTest: {
-      setStatus("Playing test tone...");
+      setStatus("Playing 1 kHz tone...");
 
-      const bool ok = [&]() {
-        metalio_audio_service::playTestTone();
-        return true;
-      }();
+      std::vector<int16_t> tone(kToneSamples);
 
-      setStatus(
-          ok ? "Speaker test done"
-             : "Speaker test failed");
+      for (std::size_t i = 0; i < tone.size(); ++i) {
+        const float phase =
+            2.0f * kPi * kToneFrequencyHz *
+            static_cast<float>(i) /
+            static_cast<float>(kSampleRate);
+
+        tone[i] = static_cast<int16_t>(
+            std::sin(phase) * 12000.0f);
+      }
+
+      const bool ok =
+          metalio_audio_service::playPcm(
+              tone.data(), tone.size(), 3000) &&
+          metalio_audio_service::waitPlaybackDrained(3000);
+
+      setStatus(ok ? "Speaker test PASS"
+                   : "Speaker test FAIL");
+
+      LOG_INF(
+          TAG,
+          "Speaker test: %s",
+          ok ? "PASS" : "FAIL");
       break;
     }
 
     case kMicTest: {
-      setStatus("Testing microphone...");
+      setStatus("Recording microphone...");
 
       if (runMicTest()) {
-        setStatus("Microphone OK");
+        setStatus("Microphone test PASS");
       } else {
-        setStatus("Microphone failed");
+        setStatus("Microphone test FAIL");
       }
 
       break;
     }
 
     case kOpusLoopbackTest: {
-      setStatus("Running Opus loopback...");
+      setStatus("Mic > Opus > speaker...");
 
       if (runOpusLoopbackTest()) {
-        setStatus("Opus loopback OK");
+        setStatus("Opus loopback PASS");
       } else {
-        setStatus("Opus loopback failed");
+        setStatus("Opus loopback FAIL");
       }
 
       break;
@@ -144,9 +163,7 @@ void MetalioAudioTestActivity::activateIndex(int index) {
 
 bool MetalioAudioTestActivity::runMicTest() {
   if (!metalio_audio_service::startCapture(false)) {
-    LOG_ERR(
-        TAG,
-        "Mic test: capture start failed");
+    LOG_ERR(TAG, "Mic test: capture start failed");
     return false;
   }
 
@@ -155,36 +172,50 @@ bool MetalioAudioTestActivity::runMicTest() {
   const bool ok =
       metalio_audio_service::readCapturedPcm(
           samples,
-          16000,
+          kSampleRate * 2,
           3000);
 
   metalio_audio_service::stopCapture();
 
   if (!ok || samples.empty()) {
-    LOG_ERR(
-        TAG,
-        "Mic test: no PCM captured");
+    LOG_ERR(TAG, "Mic test: no PCM captured");
     return false;
   }
 
+  int peak = 0;
+  double sumSquares = 0.0;
+
+  for (const int16_t sample : samples) {
+    const int value = std::abs(static_cast<int>(sample));
+    peak = std::max(peak, value);
+
+    sumSquares +=
+        static_cast<double>(sample) *
+        static_cast<double>(sample);
+  }
+
+  const double rms =
+      std::sqrt(
+          sumSquares /
+          static_cast<double>(samples.size()));
+
   LOG_INF(
       TAG,
-      "MIC OK: %u samples",
-      static_cast<unsigned>(samples.size()));
+      "MIC PASS: samples=%u rms=%.1f peak=%d",
+      static_cast<unsigned>(samples.size()),
+      rms,
+      peak);
 
   return true;
 }
 
 bool MetalioAudioTestActivity::runOpusLoopbackTest() {
   if (!metalio_audio_service::startCapture(true)) {
-    LOG_ERR(
-        TAG,
-        "Opus test: capture start failed");
+    LOG_ERR(TAG, "Opus test: capture start failed");
     return false;
   }
 
   std::vector<uint8_t> packet;
-
   bool gotPacket = false;
 
   for (int i = 0; i < 40 && !gotPacket; ++i) {
@@ -224,7 +255,7 @@ bool MetalioAudioTestActivity::runOpusLoopbackTest() {
 
   LOG_INF(
       TAG,
-      "OPUS LOOPBACK OK: %u bytes",
+      "OPUS LOOPBACK PASS: %u bytes",
       static_cast<unsigned>(packet.size()));
 
   return true;
