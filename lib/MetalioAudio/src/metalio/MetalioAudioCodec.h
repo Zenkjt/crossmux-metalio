@@ -38,4 +38,7 @@ class MetalioAudioCodec {
   bool inputRunning_ = false;
   bool outputRunning_ = false;
   uint8_t outputVolume_ = 70;
+
+  int32_t* inputBuffer_ = nullptr;
+  int32_t* outputBuffer_ = nullptr;
 };
