@@ -6,6 +6,8 @@
 
 namespace metalio_audio_service {
 
+// Zao-style audio service facade used by CrossMux activities and app layers.
+// No worker starts automatically at boot; the consumer controls start/stop.
 bool start();
 void stop();
 
@@ -17,32 +19,23 @@ void flushPlayback();
 
 bool startCapture(bool encodeToOpus = false);
 void stopCapture();
-
 bool readCapturedPcm(std::vector<int16_t>& samples,
                      std::size_t maxSamples,
                      uint32_t timeoutMs = 1000);
-
 bool recordPcm(std::vector<int16_t>& samples,
                std::size_t count,
                uint32_t timeoutMs = 5000);
 
-bool encodePcmFrame(const int16_t* samples,
-                    std::size_t count,
+bool encodePcmFrame(const int16_t* samples, std::size_t count,
                     std::vector<uint8_t>& packet);
-
-bool decodeOpusPacket(const uint8_t* packet,
-                      std::size_t packetBytes,
+bool decodeOpusPacket(const uint8_t* packet, std::size_t packetBytes,
                       std::vector<int16_t>& samples);
-
-bool pushOpusPacket(const uint8_t* packet,
-                    std::size_t packetBytes,
+bool pushOpusPacket(const uint8_t* packet, std::size_t packetBytes,
                     bool wait = false);
-
 bool popEncodedPacket(std::vector<uint8_t>& packet);
 
 void setOutputVolume(uint8_t volume);
 uint8_t outputVolume();
-
 void playTestTone();
 
 }  // namespace metalio_audio_service
