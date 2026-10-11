@@ -1,262 +1,253 @@
 #include "MetalioAudioCodec.h"
 
+#if FREEINK_DEVICE_METALIO_EINK4
+
+#include "MetalioAudio.h"
+
+#include <Arduino.h>
+#include <driver/i2s_std.h>
+
 #include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <vector>
-
-#include <esp_log.h>
-#include <freertos/FreeRTOS.h>
-
-#define TAG "MetalioAudioCodec"
+#include <array>
 
 namespace {
-constexpr int kDmaDescNum = 6;
-constexpr int kDmaFrameNum = 240;
-}
+
+constexpr std::size_t kIoChunkSamples = 960;
+
+}  // namespace
+
+int MetalioAudioCodec::inputOwnerToken_ = 0;
+int MetalioAudioCodec::outputOwnerToken_ = 0;
 
 MetalioAudioCodec::MetalioAudioCodec() = default;
 
-MetalioAudioCodec::MetalioAudioCodec(int inputSampleRate,
-                                     int outputSampleRate,
-                                     gpio_num_t bclk,
-                                     gpio_num_t ws,
-                                     gpio_num_t dout,
-                                     gpio_num_t din)
-    : inputSampleRate_(inputSampleRate),
-      outputSampleRate_(outputSampleRate),
-      bclk_(bclk),
-      ws_(ws),
-      dout_(dout),
-      din_(din) {
-    createDuplexChannels();
-}
-
 MetalioAudioCodec::~MetalioAudioCodec() {
-    stopInput();
-    stopOutput();
-    destroyChannels();
-}
-
-void MetalioAudioCodec::createDuplexChannels() {
-    if (txHandle_ != nullptr || rxHandle_ != nullptr) {
-        return;
-    }
-
-    const i2s_chan_config_t chanCfg = {
-        .id = I2S_NUM_0,
-        .role = I2S_ROLE_SLAVE,
-        .dma_desc_num = kDmaDescNum,
-        .dma_frame_num = kDmaFrameNum,
-        .auto_clear_after_cb = true,
-        .auto_clear_before_cb = false,
-        .intr_priority = 0,
-    };
-
-    ESP_ERROR_CHECK(i2s_new_channel(&chanCfg, &txHandle_, &rxHandle_));
-
-    const i2s_std_config_t stdCfg = {
-        .clk_cfg = {
-            .sample_rate_hz = static_cast<uint32_t>(outputSampleRate_),
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-#ifdef I2S_HW_VERSION_2
-            .ext_clk_freq_hz = 0,
-#endif
-        },
-        .slot_cfg = {
-            .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_STEREO,
-            .slot_mask = I2S_STD_SLOT_BOTH,
-            .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
-            .ws_pol = false,
-            .bit_shift = true,
-#ifdef I2S_HW_VERSION_2
-            .left_align = true,
-            .big_endian = false,
-            .bit_order_lsb = false,
-#endif
-        },
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = bclk_,
-            .ws = ws_,
-            .dout = dout_,
-            .din = din_,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
-    };
-
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(txHandle_, &stdCfg));
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rxHandle_, &stdCfg));
-
-    ESP_LOGI(TAG,
-             "I2S duplex created: %d Hz, BCLK=%d WS=%d DOUT=%d DIN=%d",
-             outputSampleRate_,
-             static_cast<int>(bclk_),
-             static_cast<int>(ws_),
-             static_cast<int>(dout_),
-             static_cast<int>(din_));
-}
-
-void MetalioAudioCodec::destroyChannels() {
-    if (rxHandle_ != nullptr) {
-        ESP_ERROR_CHECK(i2s_del_channel(rxHandle_));
-        rxHandle_ = nullptr;
-    }
-
-    if (txHandle_ != nullptr) {
-        ESP_ERROR_CHECK(i2s_del_channel(txHandle_));
-        txHandle_ = nullptr;
-    }
+  stopInput();
+  stopOutput();
 }
 
 bool MetalioAudioCodec::startInput() {
-    if (rxHandle_ == nullptr) {
-        return false;
-    }
-
-    if (!inputRunning_) {
-        const esp_err_t err = i2s_channel_enable(rxHandle_);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "I2S input enable failed: %s", esp_err_to_name(err));
-            return false;
-        }
-        inputRunning_ = true;
-    }
-
+  if (inputRunning_) {
     return true;
+  }
+
+  if (!freeink::metalio::acquireAudio(&inputOwnerToken_, true)) {
+    return false;
+  }
+
+  if (!freeink::metalio::startAudio(&inputOwnerToken_, true)) {
+    freeink::metalio::releaseAudio(&inputOwnerToken_, true);
+    return false;
+  }
+
+  inputRunning_ = true;
+  return true;
 }
 
 void MetalioAudioCodec::stopInput() {
-    if (rxHandle_ != nullptr && inputRunning_) {
-        const esp_err_t err = i2s_channel_disable(rxHandle_);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "I2S input disable failed: %s", esp_err_to_name(err));
-        }
-        inputRunning_ = false;
-    }
+  if (!inputRunning_) {
+    return;
+  }
+
+  freeink::metalio::stopAudio(&inputOwnerToken_, true);
+  freeink::metalio::releaseAudio(&inputOwnerToken_, true);
+
+  inputRunning_ = false;
 }
 
 bool MetalioAudioCodec::startOutput() {
-    if (txHandle_ == nullptr) {
-        return false;
-    }
-
-    if (!outputRunning_) {
-        const esp_err_t err = i2s_channel_enable(txHandle_);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "I2S output enable failed: %s", esp_err_to_name(err));
-            return false;
-        }
-        outputRunning_ = true;
-    }
-
+  if (outputRunning_) {
     return true;
+  }
+
+  if (!freeink::metalio::acquireAudio(&outputOwnerToken_, false)) {
+    return false;
+  }
+
+  if (!freeink::metalio::startAudio(&outputOwnerToken_, false)) {
+    freeink::metalio::releaseAudio(&outputOwnerToken_, false);
+    return false;
+  }
+
+  if (!freeink::metalio::setAmplifier(true)) {
+    freeink::metalio::stopAudio(&outputOwnerToken_, false);
+    freeink::metalio::releaseAudio(&outputOwnerToken_, false);
+    return false;
+  }
+
+  outputRunning_ = true;
+  return true;
 }
 
 void MetalioAudioCodec::stopOutput() {
-    if (txHandle_ != nullptr && outputRunning_) {
-        const esp_err_t err = i2s_channel_disable(txHandle_);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "I2S output disable failed: %s", esp_err_to_name(err));
-        }
-        outputRunning_ = false;
-    }
+  if (!outputRunning_) {
+    return;
+  }
+
+  freeink::metalio::setAmplifier(false);
+  freeink::metalio::stopAudio(&outputOwnerToken_, false);
+  freeink::metalio::releaseAudio(&outputOwnerToken_, false);
+
+  outputRunning_ = false;
 }
 
 std::size_t MetalioAudioCodec::read(int16_t* dest,
                                     std::size_t samples,
                                     uint32_t timeoutMs) {
-    if (!inputRunning_ || rxHandle_ == nullptr || dest == nullptr || samples == 0) {
-        return 0;
-    }
+  if (!inputRunning_ ||
+      dest == nullptr ||
+      samples == 0) {
+    return 0;
+  }
 
-    std::vector<int32_t> buffer(samples);
-    size_t bytesRead = 0;
+  const std::size_t frames =
+      std::min(samples, kIoChunkSamples);
 
-    const esp_err_t err = i2s_channel_read(
-        rxHandle_,
-        buffer.data(),
-        samples * sizeof(int32_t),
-        &bytesRead,
-        pdMS_TO_TICKS(timeoutMs));
+  std::array<int32_t, kIoChunkSamples> buffer{};
 
-    if (err != ESP_OK) {
-        if (err != ESP_ERR_TIMEOUT) {
-            ESP_LOGE(TAG, "I2S input read failed: %s", esp_err_to_name(err));
-        }
-        return 0;
-    }
+  auto& bus = freeink::metalio::audioBus();
 
-    const std::size_t count = bytesRead / sizeof(int32_t);
+  if (bus.rx == nullptr) {
+    return 0;
+  }
 
-    for (std::size_t i = 0; i < count; ++i) {
-        const int32_t value = buffer[i] >> 12;
-        dest[i] = static_cast<int16_t>(
-            std::clamp<int32_t>(value, INT16_MIN, INT16_MAX));
-    }
+  std::size_t bytesRead = 0;
 
-    return count;
+  const esp_err_t err = i2s_channel_read(
+      bus.rx,
+      buffer.data(),
+      frames * sizeof(int32_t),
+      &bytesRead,
+      pdMS_TO_TICKS(timeoutMs));
+
+  if (err != ESP_OK) {
+    return 0;
+  }
+
+  const std::size_t count =
+      std::min(frames, bytesRead / sizeof(int32_t));
+
+  for (std::size_t i = 0; i < count; ++i) {
+    dest[i] = freeink::metalio::inputSample(buffer[i]);
+  }
+
+  return count;
 }
 
 std::size_t MetalioAudioCodec::write(const int16_t* data,
                                      std::size_t samples,
                                      uint32_t timeoutMs) {
-    if (!outputRunning_ || txHandle_ == nullptr || data == nullptr || samples == 0) {
-        return 0;
-    }
+  if (!outputRunning_ ||
+      data == nullptr ||
+      samples == 0) {
+    return 0;
+  }
 
-    std::vector<int32_t> buffer(samples * 2);
+  const std::size_t frames =
+      std::min(samples, kIoChunkSamples);
 
-    const double volume = static_cast<double>(outputVolume_) / 100.0;
-    const int64_t volumeFactor =
-        static_cast<int64_t>(std::pow(volume, 2.0) * 65536.0);
+  std::array<int32_t, kIoChunkSamples * 2> stereo{};
 
-    for (std::size_t i = 0; i < samples; ++i) {
-        const int64_t temp = static_cast<int64_t>(data[i]) * volumeFactor;
-        const int32_t processed = static_cast<int32_t>(
-            std::clamp<int64_t>(temp, INT32_MIN, INT32_MAX));
+  for (std::size_t i = 0; i < frames; ++i) {
+    const int32_t pcm =
+        freeink::metalio::outputSample(
+            data[i],
+            outputVolume_);
 
-        buffer[i * 2] = processed;
-        buffer[i * 2 + 1] = processed;
-    }
+    stereo[i * 2] = pcm;
+    stereo[i * 2 + 1] = pcm;
+  }
 
-    size_t bytesWritten = 0;
-    const esp_err_t err = i2s_channel_write(
-        txHandle_,
-        buffer.data(),
-        buffer.size() * sizeof(int32_t),
-        &bytesWritten,
-        pdMS_TO_TICKS(timeoutMs));
+  auto& bus = freeink::metalio::audioBus();
 
-    if (err != ESP_OK) {
-        if (err != ESP_ERR_TIMEOUT) {
-            ESP_LOGE(TAG, "I2S output write failed: %s", esp_err_to_name(err));
-        }
-        return 0;
-    }
+  if (bus.tx == nullptr) {
+    return 0;
+  }
 
-    return bytesWritten / (2 * sizeof(int32_t));
+  std::size_t bytesWritten = 0;
+
+  const esp_err_t err = i2s_channel_write(
+      bus.tx,
+      stereo.data(),
+      frames * 2 * sizeof(int32_t),
+      &bytesWritten,
+      pdMS_TO_TICKS(timeoutMs));
+
+  if (err != ESP_OK) {
+    return 0;
+  }
+
+  return std::min(
+      frames,
+      bytesWritten / (2 * sizeof(int32_t)));
 }
 
 void MetalioAudioCodec::setOutputVolume(uint8_t volume) {
-    outputVolume_ = std::min<uint8_t>(volume, 100);
+  outputVolume_ =
+      volume > 100 ? 100 : volume;
 }
 
 uint8_t MetalioAudioCodec::outputVolume() const {
-    return outputVolume_;
+  return outputVolume_;
 }
 
 bool MetalioAudioCodec::inputRunning() const {
-    return inputRunning_;
+  return inputRunning_;
 }
 
 bool MetalioAudioCodec::outputRunning() const {
-    return outputRunning_;
+  return outputRunning_;
 }
+
+#else
+
+int MetalioAudioCodec::inputOwnerToken_ = 0;
+int MetalioAudioCodec::outputOwnerToken_ = 0;
+
+MetalioAudioCodec::MetalioAudioCodec() = default;
+MetalioAudioCodec::~MetalioAudioCodec() = default;
+
+bool MetalioAudioCodec::startInput() {
+  return false;
+}
+
+void MetalioAudioCodec::stopInput() {}
+
+bool MetalioAudioCodec::startOutput() {
+  return false;
+}
+
+void MetalioAudioCodec::stopOutput() {}
+
+std::size_t MetalioAudioCodec::read(
+    int16_t*,
+    std::size_t,
+    uint32_t) {
+  return 0;
+}
+
+std::size_t MetalioAudioCodec::write(
+    const int16_t*,
+    std::size_t,
+    uint32_t) {
+  return 0;
+}
+
+void MetalioAudioCodec::setOutputVolume(uint8_t volume) {
+  outputVolume_ =
+      volume > 100 ? 100 : volume;
+}
+
+uint8_t MetalioAudioCodec::outputVolume() const {
+  return outputVolume_;
+}
+
+bool MetalioAudioCodec::inputRunning() const {
+  return false;
+}
+
+bool MetalioAudioCodec::outputRunning() const {
+  return false;
+}
+
+#endif
