@@ -3,54 +3,39 @@
 #include <cstddef>
 #include <cstdint>
 
-#include <driver/gpio.h>
-#include <driver/i2s_std.h>
-
 class MetalioAudioCodec {
-public:
-    MetalioAudioCodec();
-    MetalioAudioCodec(int inputSampleRate,
-                      int outputSampleRate,
-                      gpio_num_t bclk,
-                      gpio_num_t ws,
-                      gpio_num_t dout,
-                      gpio_num_t din);
-    ~MetalioAudioCodec();
+ public:
+  MetalioAudioCodec();
+  ~MetalioAudioCodec();
 
-    bool startInput();
-    void stopInput();
-    bool startOutput();
-    void stopOutput();
+  MetalioAudioCodec(const MetalioAudioCodec&) = delete;
+  MetalioAudioCodec& operator=(const MetalioAudioCodec&) = delete;
 
-    std::size_t read(int16_t* dest,
-                     std::size_t samples,
-                     uint32_t timeoutMs = 1000);
-    std::size_t write(const int16_t* data,
-                      std::size_t samples,
-                      uint32_t timeoutMs = 1000);
+  bool startInput();
+  void stopInput();
 
-    void setOutputVolume(uint8_t volume);
-    uint8_t outputVolume() const;
+  bool startOutput();
+  void stopOutput();
 
-    bool inputRunning() const;
-    bool outputRunning() const;
+  std::size_t read(int16_t* dest,
+                   std::size_t samples,
+                   uint32_t timeoutMs = 1000);
 
-private:
-    void createDuplexChannels();
-    void destroyChannels();
+  std::size_t write(const int16_t* data,
+                    std::size_t samples,
+                    uint32_t timeoutMs = 1000);
 
-    int inputSampleRate_ = 16000;
-    int outputSampleRate_ = 16000;
+  void setOutputVolume(uint8_t volume);
+  uint8_t outputVolume() const;
 
-    gpio_num_t bclk_ = GPIO_NUM_NC;
-    gpio_num_t ws_ = GPIO_NUM_NC;
-    gpio_num_t dout_ = GPIO_NUM_NC;
-    gpio_num_t din_ = GPIO_NUM_NC;
+  bool inputRunning() const;
+  bool outputRunning() const;
 
-    i2s_chan_handle_t txHandle_ = nullptr;
-    i2s_chan_handle_t rxHandle_ = nullptr;
+ private:
+  static int inputOwnerToken_;
+  static int outputOwnerToken_;
 
-    bool inputRunning_ = false;
-    bool outputRunning_ = false;
-    uint8_t outputVolume_ = 70;
+  bool inputRunning_ = false;
+  bool outputRunning_ = false;
+  uint8_t outputVolume_ = 70;
 };
