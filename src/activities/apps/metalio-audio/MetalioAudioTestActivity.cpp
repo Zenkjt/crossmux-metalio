@@ -6,8 +6,6 @@
 
 #include "MetalioAudioService.h"
 
-#include "ui/UiScreen.h"
-
 namespace {
 constexpr const char* TAG = "MTAUD";
 }
@@ -65,6 +63,8 @@ void MetalioAudioTestActivity::buildScreen(UiScreen& screen) {
 }
 
 void MetalioAudioTestActivity::activateIndex(int index) {
+  app.clearTapFlash();
+  
   switch (index) {
     case kSpeakerTest:
       setStatus("Playing test tone...");
