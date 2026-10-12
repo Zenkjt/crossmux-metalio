@@ -291,7 +291,6 @@ class OggVorbisSource {
     durationMs_ = static_cast<uint32_t>(
         (static_cast<uint64_t>(totalFrames) * 1000ULL) / sourceRate_);
 
-    nextSourceFrame_ = 0.0;
     eof_ = false;
     return true;
   }
@@ -377,7 +376,7 @@ class OggVorbisSource {
             mono0 + static_cast<int32_t>((mono1 - mono0) * frac);
 
         pending_.push_back(static_cast<int16_t>(
-            std::clamp(sample, -32768, 32767)));
+            std::clamp(sample, static_cast<int32_t>(-32768), static_cast<int32_t>(32767));
       }
     }
 
