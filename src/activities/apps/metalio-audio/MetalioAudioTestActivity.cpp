@@ -394,6 +394,8 @@ void MetalioAudioTestActivity::drawSkin() {
     return;
   }
 
+    renderer.clearScreen();
+
   if (
       skinBitmap_->rewindToData() !=
       BmpReaderError::Ok) {
