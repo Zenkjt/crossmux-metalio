@@ -25,7 +25,7 @@
   ],
   "dependencies": {
     "tanakamasayuki/PCMFlow": "https://github.com/tanakamasayuki/PCMFlow.git#f6a41dd914842ca5c3c20ff38fca9f7028257fb6",
-    "nothings/stb": "https://github.com/nothings/stb.git#2c980bb598"
+    "nothings/stb": "https://github.com/nothings/stb.git#2c980bb59875b0d32144a71867fbdebb2f77cd20"
   },
   "build": {
     "srcDir": ".",
