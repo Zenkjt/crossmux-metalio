@@ -1,262 +1,618 @@
 #include "MetalioAudioTestActivity.h"
 
 #include <Arduino.h>
+
 #include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <cstring>
-#include <vector>
+#include <cstdio>
+
+#include <Bitmap.h>
+#include <FsHelpers.h>
 
 #include "MetalioAudioService.h"
-
-namespace fui = freeink::ui;
+#include "fontIds.h"
 
 namespace {
 
-constexpr const char* TAG = "MTAUD";
-constexpr uint32_t kSampleRate = 16000;
-constexpr std::size_t kToneSamples = 6400;  // 400 ms
-constexpr float kToneFrequencyHz = 1000.0f;
-constexpr float kPi = 3.14159265358979323846f;
+constexpr const char* TAG = "MUSIC";
+
+/*
+ * The supplied iPod skin is a real 4-bit grayscale BMP.
+ *
+ * It is deliberately kept as an external SD asset rather than converted
+ * into a huge C array.
+ */
+constexpr const char* kSkinPath =
+    "/sdcard/metalio/e-ink/ipod/Ipod.bmp.bmp";
+
+/*
+ * iPod-style invisible touch zones.
+ *
+ * The complete iPod body is rendered from the BMP.
+ * Nothing is drawn over these controls.
+ */
+
+constexpr Rect kMenuHit{
+    150,
+    245,
+    180,
+    100,
+};
+
+constexpr Rect kPreviousHit{
+    35,
+    515,
+    145,
+    125,
+};
+
+constexpr Rect kNextHit{
+    300,
+    515,
+    145,
+    125,
+};
+
+constexpr Rect kPlayPauseHit{
+    155,
+    650,
+    170,
+    120,
+};
+
+constexpr Rect kCenterHit{
+    155,
+    430,
+    170,
+    170,
+};
+
+/*
+ * Approximate click-wheel geometry.
+ *
+ * These are hitboxes only. The wheel itself comes from the supplied image.
+ */
+constexpr int kWheelCx = 240;
+constexpr int kWheelCy = 600;
+
+constexpr int kWheelOuterRx = 185;
+constexpr int kWheelOuterRy = 180;
+
+constexpr int kWheelCenterRadius = 78;
+
+bool contains(
+    const Rect& rect,
+    const int x,
+    const int y) {
+
+  return
+      x >= rect.x &&
+      x < rect.x + rect.width &&
+      y >= rect.y &&
+      y < rect.y + rect.height;
+}
+
+bool inEllipse(
+    const int x,
+    const int y,
+    const int cx,
+    const int cy,
+    const int rx,
+    const int ry) {
+
+  const int dx = x - cx;
+  const int dy = y - cy;
+
+  const int64_t lhs =
+      static_cast<int64_t>(dx) * dx * ry * ry +
+      static_cast<int64_t>(dy) * dy * rx * rx;
+
+  const int64_t rhs =
+      static_cast<int64_t>(rx) * rx * ry * ry;
+
+  return lhs <= rhs;
+}
 
 }  // namespace
 
 void MetalioAudioTestActivity::onEnter() {
-  UiListActivity::onEnter();
+  Activity::onEnter();
 
-  rebuildRows();
+  renderer.setOrientation(
+      GfxRenderer::Orientation::Portrait);
 
-  if (!metalio_audio_service::start()) {
-    setStatus("Audio service start failed");
-  } else {
-    setStatus("Ready");
-  }
+  volume_ =
+      metalio_audio_service::outputVolume();
+
+  loadSkin();
+
+  requestRedraw();
 }
 
 void MetalioAudioTestActivity::onExit() {
-  metalio_audio_service::stop();
-  UiListActivity::onExit();
+  Activity::onExit();
 }
 
-void MetalioAudioTestActivity::rebuildRows() {
-  rows[kSpeakerTest] = fui::ListItem{};
-  rows[kSpeakerTest].label = "Speaker test";
-  rows[kSpeakerTest].actionValue = kSpeakerTest;
+bool MetalioAudioTestActivity::loadSkin() {
+  /*
+   * Skin loading is intentionally deferred until the first render.
+   *
+   * Bitmap owns the SD file handle internally.
+   *
+   * The renderer already supports BMP rendering and 4-bit grayscale.
+   */
 
-  rows[kMicTest] = fui::ListItem{};
-  rows[kMicTest].label = "Microphone test";
-  rows[kMicTest].actionValue = kMicTest;
-
-  rows[kOpusLoopbackTest] = fui::ListItem{};
-  rows[kOpusLoopbackTest].label = "Opus loopback";
-  rows[kOpusLoopbackTest].actionValue = kOpusLoopbackTest;
-
-  rows[kStatusRow] = fui::ListItem{};
-  rows[kStatusRow].label = statusText;
-  rows[kStatusRow].actionValue = kStatusRow;
+  skinLoaded_ = true;
+  return true;
 }
 
-void MetalioAudioTestActivity::setStatus(const char* text) {
-  if (text == nullptr) {
-    statusText[0] = '\0';
-  } else {
-    std::strncpy(statusText, text, sizeof(statusText) - 1);
-    statusText[sizeof(statusText) - 1] = '\0';
-  }
-
-  rebuildRows();
+void MetalioAudioTestActivity::requestRedraw() {
   requestUpdate();
 }
 
-void MetalioAudioTestActivity::buildScreen(UiScreen& screen) {
-  const int screenWidth = renderer.getScreenWidth();
-  const int screenHeight = renderer.getScreenHeight();
+MetalioAudioTestActivity::HitTarget
+MetalioAudioTestActivity::hitTarget(
+    const int x,
+    const int y) {
 
-  const Rect content = pageContentRect();
+  /*
+   * MENU
+   */
+  if (contains(kMenuHit, x, y)) {
+    return HitTarget::Menu;
+  }
 
-  screen.setContentMarginFromScreen(
-      fui::Insets{
-          static_cast<int16_t>(content.y),
-          static_cast<int16_t>(
-              screenWidth - content.x - content.width),
-          static_cast<int16_t>(
-              screenHeight - content.y - content.height),
-          static_cast<int16_t>(content.x)});
+  /*
+   * Previous / Next
+   */
+  if (contains(kPreviousHit, x, y)) {
+    return HitTarget::Previous;
+  }
 
-  fui::ListProps props;
+  if (contains(kNextHit, x, y)) {
+    return HitTarget::Next;
+  }
 
-  props.items = rows.data();
-  props.count = static_cast<uint16_t>(rows.size());
-  props.action = ACTION_ROW;
-  props.inputMask = fui::InputTouch;
+  /*
+   * Play / Pause
+   */
+  if (contains(kPlayPauseHit, x, y)) {
+    return HitTarget::PlayPause;
+  }
 
-  syncListViewport(screen, props);
-  screen.list(props);
+  /*
+   * Center button.
+   */
+  if (contains(kCenterHit, x, y)) {
+    return HitTarget::Center;
+  }
+
+  /*
+   * Click wheel.
+   */
+  if (!inEllipse(
+          x,
+          y,
+          kWheelCx,
+          kWheelCy,
+          kWheelOuterRx,
+          kWheelOuterRy)) {
+
+    return HitTarget::None;
+  }
+
+  /*
+   * Center of wheel.
+   */
+  const int dx = x - kWheelCx;
+  const int dy = y - kWheelCy;
+
+  if (
+      dx * dx + dy * dy <=
+      kWheelCenterRadius * kWheelCenterRadius) {
+
+    return HitTarget::Center;
+  }
+
+  /*
+   * Outer wheel sectors.
+
+       UP
+        |
+   LEFT-+-RIGHT
+        |
+      DOWN
+  */
+
+  if (std::abs(dy) >= std::abs(dx)) {
+    return
+        dy < 0
+            ? HitTarget::VolumeUp
+            : HitTarget::VolumeDown;
+  }
+
+  return
+      dx < 0
+          ? HitTarget::Previous
+          : HitTarget::Next;
 }
 
-void MetalioAudioTestActivity::activateIndex(int index) {
-  if (index == kStatusRow) {
+void MetalioAudioTestActivity::adjustVolume(
+    const int delta) {
+
+  const int next =
+      std::clamp(
+          static_cast<int>(volume_) + delta,
+          0,
+          100);
+
+  volume_ =
+      static_cast<uint8_t>(next);
+
+  metalio_audio_service::setOutputVolume(
+      volume_);
+
+  std::snprintf(
+      volumeText_,
+      sizeof(volumeText_),
+      "Volume %u%%",
+      static_cast<unsigned>(volume_));
+
+  volumeOverlayUntil_ =
+      millis() + 1400;
+
+  LOG_INF(
+      TAG,
+      "Volume %u%%",
+      static_cast<unsigned>(volume_));
+
+  requestRedraw();
+}
+
+void MetalioAudioTestActivity::togglePlayPause() {
+  playing_ = !playing_;
+
+  LOG_INF(
+      TAG,
+      "Playback state: %s",
+      playing_ ? "PLAY" : "PAUSE");
+
+  requestRedraw();
+}
+
+void MetalioAudioTestActivity::loop() {
+  int x = 0;
+  int y = 0;
+
+  /*
+   * Touch control.
+   */
+  if (mappedInput.wasScreenTapped(x, y)) {
+
+    switch (hitTarget(x, y)) {
+
+      case HitTarget::Menu:
+        finish();
+        return;
+
+      case HitTarget::Previous:
+        LOG_INF(TAG, "Previous track");
+        requestRedraw();
+        return;
+
+      case HitTarget::Next:
+        LOG_INF(TAG, "Next track");
+        requestRedraw();
+        return;
+
+      case HitTarget::PlayPause:
+      case HitTarget::Center:
+        togglePlayPause();
+        return;
+
+      case HitTarget::VolumeUp:
+        adjustVolume(+5);
+        return;
+
+      case HitTarget::VolumeDown:
+        adjustVolume(-5);
+        return;
+
+      case HitTarget::None:
+        break;
+    }
+  }
+
+  /*
+   * Physical / logical controls.
+   */
+
+  if (
+      mappedInput.wasReleased(
+          MappedInputManager::Button::Back)) {
+
+    finish();
     return;
   }
 
-  app.clearTapFlash();
+  if (
+      mappedInput.wasReleased(
+          MappedInputManager::Button::Up)) {
 
-  switch (index) {
-    case kSpeakerTest: {
-      setStatus("Playing 1 kHz tone...");
+    adjustVolume(+5);
+    return;
+  }
 
-      std::vector<int16_t> tone(kToneSamples);
+  if (
+      mappedInput.wasReleased(
+          MappedInputManager::Button::Down)) {
 
-      for (std::size_t i = 0; i < tone.size(); ++i) {
-        const float phase =
-            2.0f * kPi * kToneFrequencyHz *
-            static_cast<float>(i) /
-            static_cast<float>(kSampleRate);
+    adjustVolume(-5);
+    return;
+  }
 
-        tone[i] = static_cast<int16_t>(
-            std::sin(phase) * 12000.0f);
-      }
+  if (
+      mappedInput.wasReleased(
+          MappedInputManager::Button::Left)) {
 
-      const bool ok =
-          metalio_audio_service::playPcm(
-              tone.data(), tone.size(), 3000) &&
-          metalio_audio_service::waitPlaybackDrained(3000);
+    LOG_INF(TAG, "Previous track");
+    requestRedraw();
+    return;
+  }
 
-      setStatus(ok ? "Speaker test PASS"
-                   : "Speaker test FAIL");
+  if (
+      mappedInput.wasReleased(
+          MappedInputManager::Button::Right)) {
 
-      LOG_INF(
-          TAG,
-          "Speaker test: %s",
-          ok ? "PASS" : "FAIL");
-      break;
-    }
+    LOG_INF(TAG, "Next track");
+    requestRedraw();
+    return;
+  }
 
-    case kMicTest: {
-      setStatus("Recording microphone...");
+  if (
+      mappedInput.wasReleased(
+          MappedInputManager::Button::Confirm)) {
 
-      if (runMicTest()) {
-        setStatus("Microphone test PASS");
-      } else {
-        setStatus("Microphone test FAIL");
-      }
+    togglePlayPause();
+    return;
+  }
 
-      break;
-    }
+  /*
+   * Expire temporary volume overlay.
+   */
+  if (
+      volumeOverlayUntil_ != 0 &&
+      millis() >= volumeOverlayUntil_) {
 
-    case kOpusLoopbackTest: {
-      setStatus("Mic > Opus > speaker...");
-
-      if (runOpusLoopbackTest()) {
-        setStatus("Opus loopback PASS");
-      } else {
-        setStatus("Opus loopback FAIL");
-      }
-
-      break;
-    }
-
-    default:
-      break;
+    volumeOverlayUntil_ = 0;
+    requestRedraw();
   }
 }
 
-bool MetalioAudioTestActivity::runMicTest() {
-  if (!metalio_audio_service::startCapture(false)) {
-    LOG_ERR(TAG, "Mic test: capture start failed");
-    return false;
+void MetalioAudioTestActivity::drawSkin() {
+
+  /*
+   * Open the BMP from SD and let the existing CrossMux Bitmap
+   * implementation handle the 4-bit grayscale conversion.
+   *
+   * The renderer has native:
+   *
+   *   drawBitmap(...)
+   *   drawBitmapCropToFill(...)
+   *
+   * so there is no reason to convert the supplied image into
+   * another representation.
+   */
+
+  auto file = FsHelpers::openFile(
+      kSkinPath,
+      "rb");
+
+  if (!file) {
+    LOG_ERR(
+        TAG,
+        "Cannot open iPod skin: %s",
+        kSkinPath);
+
+    renderer.clearScreen();
+
+    renderer.drawText(
+        UI_12_FONT_ID,
+        30,
+        50,
+        "iPod skin not found");
+
+    renderer.drawText(
+        UI_10_FONT_ID,
+        30,
+        80,
+        kSkinPath);
+
+    return;
   }
 
-  std::vector<int16_t> samples;
+  Bitmap bitmap(
+      *file,
+      false,
+      false);
 
-  const bool ok =
-      metalio_audio_service::readCapturedPcm(
-          samples,
-          kSampleRate * 2,
-          3000);
+  const BmpReaderError error =
+      bitmap.parseHeaders();
 
-  metalio_audio_service::stopCapture();
+  if (error != BmpReaderError::Ok) {
 
-  if (!ok || samples.empty()) {
-    LOG_ERR(TAG, "Mic test: no PCM captured");
-    return false;
+    LOG_ERR(
+        TAG,
+        "Invalid iPod BMP: %s",
+        Bitmap::errorToString(error));
+
+    renderer.clearScreen();
+
+    renderer.drawText(
+        UI_12_FONT_ID,
+        30,
+        50,
+        "Invalid iPod BMP");
+
+    return;
   }
 
-  int peak = 0;
-  double sumSquares = 0.0;
-
-  for (const int16_t sample : samples) {
-    const int value = std::abs(static_cast<int>(sample));
-    peak = std::max(peak, value);
-
-    sumSquares +=
-        static_cast<double>(sample) *
-        static_cast<double>(sample);
-  }
-
-  const double rms =
-      std::sqrt(
-          sumSquares /
-          static_cast<double>(samples.size()));
-
-  LOG_INF(
-      TAG,
-      "MIC PASS: samples=%u rms=%.1f peak=%d",
-      static_cast<unsigned>(samples.size()),
-      rms,
-      peak);
-
-  return true;
+  /*
+   * Fit the complete supplied iPod image into
+   * the logical 480x800 screen.
+   *
+   * If the supplied BMP is already 480x800,
+   * this becomes a 1:1 render.
+   */
+  renderer.drawBitmapCropToFill(
+      bitmap,
+      0,
+      0,
+      renderer.getScreenWidth(),
+      renderer.getScreenHeight());
 }
 
-bool MetalioAudioTestActivity::runOpusLoopbackTest() {
-  if (!metalio_audio_service::startCapture(true)) {
-    LOG_ERR(TAG, "Opus test: capture start failed");
-    return false;
+void MetalioAudioTestActivity::render(
+    RenderLock&&) {
+
+  renderer.setOrientation(
+      GfxRenderer::Orientation::Portrait);
+
+  /*
+   * 1. Draw the complete iPod body.
+   */
+  drawSkin();
+
+  /*
+   * 2. Dynamic LCD content.
+   *
+   * This is deliberately drawn only inside the
+   * LCD area of the supplied skin.
+   *
+   * These coordinates are the initial reference
+   * positions and will be tuned against the actual
+   * BMP once displayed on hardware.
+   */
+
+  constexpr int kDisplayX = 92;
+  constexpr int kDisplayY = 93;
+  constexpr int kDisplayWidth = 296;
+
+  renderer.drawText(
+      UI_10_FONT_ID,
+      kDisplayX,
+      kDisplayY,
+      "MUSIC");
+
+  renderer.drawText(
+      UI_12_FONT_ID,
+      kDisplayX,
+      kDisplayY + 32,
+      title_);
+
+  renderer.drawText(
+      UI_10_FONT_ID,
+      kDisplayX,
+      kDisplayY + 58,
+      artist_);
+
+  /*
+   * Playback state.
+   */
+  const char* state =
+      playing_
+          ? "▶"
+          : "Ⅱ";
+
+  renderer.drawText(
+      UI_10_FONT_ID,
+      kDisplayX + kDisplayWidth -
+          renderer.getTextWidth(
+              UI_10_FONT_ID,
+              state),
+      kDisplayY,
+      state);
+
+  /*
+   * Progress bar.
+   *
+   * Real track duration/position will be connected
+   * when the decoder/player layer is added.
+   */
+  constexpr int kProgressY =
+      kDisplayY + 82;
+
+  renderer.drawRect(
+      kDisplayX,
+      kProgressY,
+      kDisplayWidth,
+      2,
+      true);
+
+  if (playing_) {
+
+    renderer.fillRect(
+        kDisplayX,
+        kProgressY,
+        kDisplayWidth / 3,
+        2,
+        true);
   }
 
-  std::vector<uint8_t> packet;
-  bool gotPacket = false;
+  renderer.drawText(
+      UI_10_FONT_ID,
+      kDisplayX,
+      kProgressY + 22,
+      "00:00");
 
-  for (int i = 0; i < 40 && !gotPacket; ++i) {
-    gotPacket =
-        metalio_audio_service::popEncodedPacket(packet);
+  const char* duration =
+      "00:00";
 
-    if (!gotPacket) {
-      delay(50);
-    }
+  renderer.drawText(
+      UI_10_FONT_ID,
+      kDisplayX +
+          kDisplayWidth -
+          renderer.getTextWidth(
+              UI_10_FONT_ID,
+              duration),
+      kProgressY + 22,
+      duration);
+
+  /*
+   * Temporary volume overlay.
+   *
+   * It appears only when volume changes,
+   * so the iPod body remains visually clean.
+   */
+  if (
+      volumeOverlayUntil_ != 0 &&
+      millis() < volumeOverlayUntil_) {
+
+    const int width =
+        renderer.getTextWidth(
+            UI_12_FONT_ID,
+            volumeText_);
+
+    const int x =
+        (renderer.getScreenWidth() - width) / 2;
+
+    renderer.fillRect(
+        x - 8,
+        180,
+        width + 16,
+        30,
+        true);
+
+    renderer.drawText(
+        UI_12_FONT_ID,
+        x,
+        184,
+        volumeText_,
+        false);
   }
 
-  metalio_audio_service::stopCapture();
-
-  if (!gotPacket || packet.empty()) {
-    LOG_ERR(
-        TAG,
-        "Opus test: no encoded packet received");
-    return false;
-  }
-
-  if (!metalio_audio_service::pushOpusPacket(
-          packet.data(),
-          packet.size(),
-          true)) {
-    LOG_ERR(
-        TAG,
-        "Opus test: packet enqueue failed");
-    return false;
-  }
-
-  if (!metalio_audio_service::waitPlaybackDrained(3000)) {
-    LOG_ERR(
-        TAG,
-        "Opus test: speaker playback failed");
-    return false;
-  }
-
-  LOG_INF(
-      TAG,
-      "OPUS LOOPBACK PASS: %u bytes",
-      static_cast<unsigned>(packet.size()));
-
-  return true;
+  /*
+   * Full skin + dynamic screen.
+   */
+  renderer.displayBuffer(
+      HalDisplay::FAST_REFRESH);
 }
