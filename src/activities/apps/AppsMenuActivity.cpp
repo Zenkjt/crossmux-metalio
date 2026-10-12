@@ -154,7 +154,9 @@ void AppsMenuActivity::rebuildRowItems() {
     const int appIndex = getAppIndexForVisibleIndex(visibleIndex);
     if (appIndex < 0) continue;
     fui::ListItem item;
-    item.label = I18N.get(kAppEntries[appIndex].titleId);
+    item.label = kAppEntries[appIndex].id == AppId::MetalioAudioTest
+                 ? "Music Player"
+                 : I18N.get(kAppEntries[appIndex].titleId);
     item.icon = listIconFor(kAppEntries[appIndex].icon, 32);
     item.actionValue = static_cast<int16_t>(visibleIndex);
     rowItems.push_back(item);
@@ -247,7 +249,9 @@ void AppsMenuActivity::drawIconGrid(const Rect& rect, const int visibleCount, co
     const int iconY = cell.y + std::max(5, (cell.height - iconSize - lineHeight - 8) / 2);
     InxAppIcons::draw(renderer, kAppEntries[appIndex].icon, iconX, iconY, iconScale, isSelected);
     const std::string label =
-        renderer.truncatedText(UI_10_FONT_ID, I18N.get(kAppEntries[appIndex].titleId), std::max(1, cell.width - 8));
+        renderer.truncatedText(UI_10_FONT_ID, kAppEntries[appIndex].id == AppId::MetalioAudioTest
+    ? "Music Player"
+    : I18N.get(kAppEntries[appIndex].titleId), std::max(1, cell.width - 8));
     const int labelX = cell.x + (cell.width - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2;
     renderer.drawText(UI_10_FONT_ID, labelX, iconY + iconSize + 8, label.c_str(), !isSelected);
   }
