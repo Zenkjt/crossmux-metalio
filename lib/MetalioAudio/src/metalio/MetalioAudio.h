@@ -35,11 +35,7 @@ inline void logErr(const char* op, esp_err_t err) {
 }
 
 inline void logPins() {
-  Serial.printf("[METALIO-AUDIO] I2S pins: BCLK=%d WS=%d DOUT=%d DIN=%d\n",
-                static_cast<int>(BoardConfig::ACTIVE.audio.bclk),
-                static_cast<int>(BoardConfig::ACTIVE.audio.lrclk),
-                static_cast<int>(BoardConfig::ACTIVE.audio.dout),
-                static_cast<int>(BoardConfig::ACTIVE.mic.data));
+  Serial.println("[METALIO-AUDIO] I2S pins: BCLK=6 WS=43 DOUT=7 DIN=17 (Metalio E-INK4 fixed mapping)");
   Serial.println("[METALIO-AUDIO] Expected Metalio E-INK4: BCLK=6 WS=43 DOUT=7 DIN=17");
   Serial.println("[METALIO-AUDIO] BT UART: RX=47 TX=48 baud=115200");
 }
@@ -156,10 +152,10 @@ inline bool acquireAudio(const void* owner, bool input) {
     config.slot_cfg.bit_order_lsb = false;
 #endif
     config.gpio_cfg.mclk = I2S_GPIO_UNUSED;
-    config.gpio_cfg.bclk = static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.bclk);
-    config.gpio_cfg.ws = static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.lrclk);
-    config.gpio_cfg.dout = static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.dout);
-    config.gpio_cfg.din = static_cast<gpio_num_t>(BoardConfig::ACTIVE.mic.data);
+    config.gpio_cfg.bclk = GPIO_NUM_6;
+    config.gpio_cfg.ws = GPIO_NUM_43;
+    config.gpio_cfg.dout = GPIO_NUM_7;
+    config.gpio_cfg.din = GPIO_NUM_17;
 
     const esp_err_t txErr = i2s_channel_init_std_mode(bus.tx, &config);
     logErr("TX init", txErr);
