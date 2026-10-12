@@ -30,7 +30,7 @@
 // is started on demand by the test Activity, not at boot.
 //
 // Task-memory architecture follows Zao:
-//   - input/output task stacks: 8 KiB each in SPIRAM
+//   - input/output task stacks: 16 KiB each in SPIRAM
 //   - Opus task stack: 128 KiB in SPIRAM, allocated explicitly
 //   - Opus TCB: internal RAM
 //   - caps-created tasks are deleted with vTaskDeleteWithCaps()
@@ -46,18 +46,28 @@ constexpr std::size_t kMaxEncodeQueue = 4;
 constexpr std::size_t kMaxDecodeQueue = 32;
 constexpr std::size_t kMaxSendQueue = 32;
 constexpr std::size_t kMaxCaptureFrames = 4;
-constexpr std::size_t kFrameSamples = metalio_opus::kFrameSamples;
+constexpr std::size_t kFrameSamples =
+    metalio_opus::kFrameSamples;
 
-constexpr uint32_t kInputOutputTaskStackBytes = 8 * 1024;
-constexpr std::size_t kOpusTaskStackBytes = 128 * 1024;
+constexpr uint32_t kInputOutputTaskStackBytes =
+    16 * 1024;
+
+constexpr std::size_t kOpusTaskStackBytes =
+    128 * 1024;
+
 constexpr std::size_t kOpusTaskStackWords =
-    kOpusTaskStackBytes / sizeof(StackType_t);
+    kOpusTaskStackBytes /
+    sizeof(StackType_t);
 
 constexpr UBaseType_t kInputPriority = 5;
 constexpr UBaseType_t kOutputPriority = 4;
 constexpr UBaseType_t kOpusPriority = 3;
+
 constexpr uint32_t kStopTimeoutMs = 2500;
-constexpr UBaseType_t kStackCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+
+constexpr UBaseType_t kStackCaps =
+    MALLOC_CAP_SPIRAM |
+    MALLOC_CAP_8BIT;
 
 enum class EncodeTarget : uint8_t {
   SendQueue,
@@ -66,19 +76,26 @@ enum class EncodeTarget : uint8_t {
 
 struct PlaybackRequest {
   std::vector<int16_t> pcm;
+
   bool done = false;
   bool success = false;
   bool cancelled = false;
+
   std::mutex mutex;
   std::condition_variable cv;
 };
 
 struct EncodeRequest {
   std::vector<int16_t> pcm;
-  EncodeTarget target = EncodeTarget::SendQueue;
+
+  EncodeTarget target =
+      EncodeTarget::SendQueue;
+
   std::vector<uint8_t> packet;
+
   bool done = false;
   bool success = false;
+
   std::mutex mutex;
   std::condition_variable cv;
 };
@@ -93,20 +110,33 @@ struct CaptureFrame {
 
 MetalioAudioCodec outputCodec;
 MetalioAudioCodec inputCodec;
+
 metalio_opus::Encoder opusEncoder;
 metalio_opus::Decoder opusDecoder;
 
 std::mutex queueMutex;
 std::condition_variable queueCv;
+
 std::mutex codecMutex;
 std::mutex hardwareLifecycleMutex;
 std::mutex taskLifecycleMutex;
 
-std::deque<std::shared_ptr<PlaybackRequest>> playbackQueue;
-std::deque<std::shared_ptr<EncodeRequest>> encodeQueue;
-std::deque<DecodeRequest> decodeQueue;
-std::deque<std::vector<uint8_t>> sendQueue;
-std::deque<CaptureFrame> captureQueue;
+std::deque<
+    std::shared_ptr<PlaybackRequest>>
+    playbackQueue;
+
+std::deque<
+    std::shared_ptr<EncodeRequest>>
+    encodeQueue;
+
+std::deque<DecodeRequest>
+    decodeQueue;
+
+std::deque<std::vector<uint8_t>>
+    sendQueue;
+
+std::deque<CaptureFrame>
+    captureQueue;
 
 TaskHandle_t inputTaskHandle = nullptr;
 TaskHandle_t outputTaskHandle = nullptr;
@@ -123,64 +153,99 @@ bool outputBusy = false;
 bool decodeBusy = false;
 
 bool startInputCodec() {
-  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  std::lock_guard<std::mutex> lock(
+      hardwareLifecycleMutex);
+
   return inputCodec.startInput();
 }
 
 void stopInputCodec() {
-  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  std::lock_guard<std::mutex> lock(
+      hardwareLifecycleMutex);
+
   inputCodec.stopInput();
 }
 
 bool startOutputCodec() {
-  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  std::lock_guard<std::mutex> lock(
+      hardwareLifecycleMutex);
+
   return outputCodec.startOutput();
 }
 
 void stopOutputCodec() {
-  std::lock_guard<std::mutex> lock(hardwareLifecycleMutex);
+  std::lock_guard<std::mutex> lock(
+      hardwareLifecycleMutex);
+
   outputCodec.stopOutput();
 }
 
-void finishEncode(const std::shared_ptr<EncodeRequest>& request, bool success) {
+void finishEncode(
+    const std::shared_ptr<EncodeRequest>& request,
+    bool success) {
   {
-    std::lock_guard<std::mutex> lock(request->mutex);
-    if (request->done) return;
+    std::lock_guard<std::mutex> lock(
+        request->mutex);
+
+    if (request->done) {
+      return;
+    }
+
     request->success = success;
     request->done = true;
   }
+
   request->cv.notify_all();
 }
 
-void finishPlayback(const std::shared_ptr<PlaybackRequest>& request,
-                    bool success) {
+void finishPlayback(
+    const std::shared_ptr<PlaybackRequest>& request,
+    bool success) {
   {
-    std::lock_guard<std::mutex> lock(request->mutex);
-    if (request->done) return;
+    std::lock_guard<std::mutex> lock(
+        request->mutex);
+
+    if (request->done) {
+      return;
+    }
+
     request->success = success;
     request->done = true;
   }
+
   request->cv.notify_all();
 }
 
-bool isCancelled(const std::shared_ptr<PlaybackRequest>& request) {
-  std::lock_guard<std::mutex> lock(request->mutex);
+bool isCancelled(
+    const std::shared_ptr<PlaybackRequest>& request) {
+  std::lock_guard<std::mutex> lock(
+      request->mutex);
+
   return request->cancelled;
 }
 
-void cancelPlayback(const std::shared_ptr<PlaybackRequest>& request) {
+void cancelPlayback(
+    const std::shared_ptr<PlaybackRequest>& request) {
   {
-    std::lock_guard<std::mutex> lock(request->mutex);
+    std::lock_guard<std::mutex> lock(
+        request->mutex);
+
     request->cancelled = true;
   }
+
   finishPlayback(request, false);
 }
 
-void markTaskExited(TaskHandle_t* handle, bool capsAllocated) {
+void markTaskExited(
+    TaskHandle_t* handle,
+    bool capsAllocated) {
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     *handle = nullptr;
   }
+
   queueCv.notify_all();
 
   if (capsAllocated) {
@@ -193,226 +258,449 @@ void markTaskExited(TaskHandle_t* handle, bool capsAllocated) {
 void inputTask(void*) {
   for (;;) {
     {
-      std::unique_lock<std::mutex> lock(queueMutex);
-      queueCv.wait_for(lock, std::chrono::milliseconds(100), [] {
-        return stopRequested || captureRunning;
-      });
-      if (stopRequested) break;
-      if (!captureRunning) continue;
+      std::unique_lock<std::mutex> lock(
+          queueMutex);
+
+      queueCv.wait_for(
+          lock,
+          std::chrono::milliseconds(100),
+          [] {
+            return stopRequested ||
+                   captureRunning;
+          });
+
+      if (stopRequested) {
+        break;
+      }
+
+      if (!captureRunning) {
+        continue;
+      }
     }
 
     if (!startInputCodec()) {
-      LOG_ERR("METALIO-AUDIO", "microphone start failed");
-      vTaskDelay(pdMS_TO_TICKS(50));
+      LOG_ERR(
+          "METALIO-AUDIO",
+          "microphone start failed");
+
+      vTaskDelay(
+          pdMS_TO_TICKS(50));
+
       continue;
     }
 
     while (true) {
       {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        if (stopRequested || !captureRunning) break;
-      }
+        std::lock_guard<std::mutex> lock(
+            queueMutex);
 
-      std::vector<int16_t> pcm(kFrameSamples);
-      std::size_t offset = 0;
-      while (offset < kFrameSamples) {
-        const std::size_t n = inputCodec.read(
-            pcm.data() + offset, kFrameSamples - offset, 1000);
-        if (n == 0) break;
-        offset += n;
-      }
-      if (offset != kFrameSamples) continue;
-
-      {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        // stopCapture()/stop() may have been called while I2S read was blocked.
-        if (stopRequested || !captureRunning) continue;
-        if (captureQueue.size() >= kMaxCaptureFrames) captureQueue.pop_front();
-        captureQueue.push_back(CaptureFrame{std::move(pcm)});
-
-        if (captureEncode && encodeQueue.size() < kMaxEncodeQueue) {
-          auto request = std::make_shared<EncodeRequest>();
-          request->target = EncodeTarget::SendQueue;
-          request->pcm = captureQueue.back().samples;
-          encodeQueue.push_back(std::move(request));
+        if (stopRequested ||
+            !captureRunning) {
+          break;
         }
       }
+
+      std::vector<int16_t> pcm(
+          kFrameSamples);
+
+      std::size_t offset = 0;
+
+      while (offset < kFrameSamples) {
+        const std::size_t n =
+            inputCodec.read(
+                pcm.data() + offset,
+                kFrameSamples - offset,
+                1000);
+
+        if (n == 0) {
+          break;
+        }
+
+        offset += n;
+      }
+
+      if (offset != kFrameSamples) {
+        continue;
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(
+            queueMutex);
+
+        // stopCapture()/stop() may have been called while I2S read was blocked.
+        if (stopRequested ||
+            !captureRunning) {
+          continue;
+        }
+
+        if (captureQueue.size() >=
+            kMaxCaptureFrames) {
+          captureQueue.pop_front();
+        }
+
+        captureQueue.push_back(
+            CaptureFrame{
+                std::move(pcm)});
+
+        if (captureEncode &&
+            encodeQueue.size() <
+                kMaxEncodeQueue) {
+          auto request =
+              std::make_shared<
+                  EncodeRequest>();
+
+          request->target =
+              EncodeTarget::SendQueue;
+
+          request->pcm =
+              captureQueue.back().samples;
+
+          encodeQueue.push_back(
+              std::move(request));
+        }
+      }
+
       queueCv.notify_all();
     }
+
     stopInputCodec();
   }
 
   stopInputCodec();
-  markTaskExited(&inputTaskHandle, true);
+
+  markTaskExited(
+      &inputTaskHandle,
+      true);
 }
 
 void outputTask(void*) {
   for (;;) {
-    std::shared_ptr<PlaybackRequest> request;
+    std::shared_ptr<
+        PlaybackRequest> request;
+
     {
-      std::unique_lock<std::mutex> lock(queueMutex);
-      queueCv.wait(lock, [] {
-        return stopRequested || !playbackQueue.empty();
-      });
-      if (playbackQueue.empty() && stopRequested) break;
+      std::unique_lock<std::mutex> lock(
+          queueMutex);
+
+      queueCv.wait(
+          lock,
+          [] {
+            return stopRequested ||
+                   !playbackQueue.empty();
+          });
+
+      if (playbackQueue.empty() &&
+          stopRequested) {
+        break;
+      }
+
       if (!playbackQueue.empty()) {
-        request = std::move(playbackQueue.front());
+        request =
+            std::move(
+                playbackQueue.front());
+
         playbackQueue.pop_front();
+
         outputBusy = true;
       }
     }
 
-    if (!request) continue;
-    if (isCancelled(request)) {
-      finishPlayback(request, false);
-      {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        outputBusy = false;
-      }
-      queueCv.notify_all();
+    if (!request) {
       continue;
     }
 
-    bool success = startOutputCodec();
+    if (isCancelled(request)) {
+      finishPlayback(
+          request,
+          false);
+
+      {
+        std::lock_guard<std::mutex> lock(
+            queueMutex);
+
+        outputBusy = false;
+      }
+
+      queueCv.notify_all();
+
+      continue;
+    }
+
+    bool success =
+        startOutputCodec();
+
     if (success) {
       std::size_t offset = 0;
-      while (offset < request->pcm.size()) {
+
+      while (
+          offset <
+          request->pcm.size()) {
         bool stopping = false;
+
         {
-          std::lock_guard<std::mutex> lock(queueMutex);
+          std::lock_guard<std::mutex> lock(
+              queueMutex);
+
           stopping = stopRequested;
         }
-        if (stopping || isCancelled(request)) {
+
+        if (stopping ||
+            isCancelled(request)) {
           success = false;
           break;
         }
-        const std::size_t written = outputCodec.write(
-            request->pcm.data() + offset,
-            request->pcm.size() - offset, 1000);
+
+        const std::size_t written =
+            outputCodec.write(
+                request->pcm.data() +
+                    offset,
+                request->pcm.size() -
+                    offset,
+                1000);
+
         if (written == 0) {
           success = false;
           break;
         }
+
         offset += written;
       }
+
       stopOutputCodec();
     }
 
-    finishPlayback(request, success);
+    finishPlayback(
+        request,
+        success);
+
     {
-      std::lock_guard<std::mutex> lock(queueMutex);
+      std::lock_guard<std::mutex> lock(
+          queueMutex);
+
       outputBusy = false;
     }
+
     queueCv.notify_all();
   }
 
   stopOutputCodec();
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     outputBusy = false;
   }
-  markTaskExited(&outputTaskHandle, true);
+
+  markTaskExited(
+      &outputTaskHandle,
+      true);
 }
 
 void opusTask(void*) {
   for (;;) {
-    std::shared_ptr<EncodeRequest> encode;
+    std::shared_ptr<
+        EncodeRequest> encode;
+
     DecodeRequest decode;
+
     bool doEncode = false;
     bool doDecode = false;
 
     {
-      std::unique_lock<std::mutex> lock(queueMutex);
-      queueCv.wait(lock, [] {
-        const bool canEncode = !encodeQueue.empty() &&
-            (sendQueue.size() < kMaxSendQueue ||
-             encodeQueue.front()->target == EncodeTarget::Synchronous);
-        const bool canDecode = !decodeQueue.empty() &&
-            playbackQueue.size() < kMaxPlaybackQueue;
-        return stopRequested || canEncode || canDecode;
-      });
-      if (stopRequested) break;
+      std::unique_lock<std::mutex> lock(
+          queueMutex);
 
-      if (!decodeQueue.empty() && playbackQueue.size() < kMaxPlaybackQueue) {
-        decode = std::move(decodeQueue.front());
+      queueCv.wait(
+          lock,
+          [] {
+            const bool canEncode =
+                !encodeQueue.empty() &&
+                (sendQueue.size() <
+                     kMaxSendQueue ||
+                 encodeQueue.front()
+                         ->target ==
+                     EncodeTarget::
+                         Synchronous);
+
+            const bool canDecode =
+                !decodeQueue.empty() &&
+                playbackQueue.size() <
+                    kMaxPlaybackQueue;
+
+            return stopRequested ||
+                   canEncode ||
+                   canDecode;
+          });
+
+      if (stopRequested) {
+        break;
+      }
+
+      if (!decodeQueue.empty() &&
+          playbackQueue.size() <
+              kMaxPlaybackQueue) {
+        decode =
+            std::move(
+                decodeQueue.front());
+
         decodeQueue.pop_front();
+
         decodeBusy = true;
         doDecode = true;
-      } else if (!encodeQueue.empty() &&
-                 (sendQueue.size() < kMaxSendQueue ||
-                  encodeQueue.front()->target == EncodeTarget::Synchronous)) {
-        encode = std::move(encodeQueue.front());
+
+      } else if (
+          !encodeQueue.empty() &&
+          (sendQueue.size() <
+               kMaxSendQueue ||
+           encodeQueue.front()->target ==
+               EncodeTarget::
+                   Synchronous)) {
+        encode =
+            std::move(
+                encodeQueue.front());
+
         encodeQueue.pop_front();
+
         doEncode = true;
       }
     }
 
     if (doDecode) {
       std::vector<int16_t> pcm;
+
       bool ok = false;
+
       {
-        std::lock_guard<std::mutex> lock(codecMutex);
-        ok = opusDecoder.decode(decode.packet.data(), decode.packet.size(), pcm);
+        std::lock_guard<std::mutex> lock(
+            codecMutex);
+
+        ok =
+            opusDecoder.decode(
+                decode.packet.data(),
+                decode.packet.size(),
+                pcm);
       }
+
       if (ok && !pcm.empty()) {
-        auto request = std::make_shared<PlaybackRequest>();
-        request->pcm = std::move(pcm);
+        auto request =
+            std::make_shared<
+                PlaybackRequest>();
+
+        request->pcm =
+            std::move(pcm);
+
         {
-          std::lock_guard<std::mutex> lock(queueMutex);
-          if (!stopRequested && playbackQueue.size() < kMaxPlaybackQueue) {
-            playbackQueue.push_back(std::move(request));
+          std::lock_guard<std::mutex> lock(
+              queueMutex);
+
+          if (!stopRequested &&
+              playbackQueue.size() <
+                  kMaxPlaybackQueue) {
+            playbackQueue.push_back(
+                std::move(request));
           }
+
           decodeBusy = false;
         }
+
       } else {
-        LOG_ERR("METALIO-AUDIO", "Opus decode failed");
-        std::lock_guard<std::mutex> lock(queueMutex);
+        LOG_ERR(
+            "METALIO-AUDIO",
+            "Opus decode failed");
+
+        std::lock_guard<std::mutex> lock(
+            queueMutex);
+
         decodeBusy = false;
       }
+
       queueCv.notify_all();
+
       continue;
     }
 
     if (doEncode) {
       std::vector<uint8_t> packet;
+
       bool ok = false;
+
       {
-        std::lock_guard<std::mutex> lock(codecMutex);
-        ok = opusEncoder.encode(encode->pcm.data(), encode->pcm.size(), packet);
+        std::lock_guard<std::mutex> lock(
+            codecMutex);
+
+        ok =
+            opusEncoder.encode(
+                encode->pcm.data(),
+                encode->pcm.size(),
+                packet);
       }
 
-      if (encode->target == EncodeTarget::Synchronous) {
+      if (encode->target ==
+          EncodeTarget::Synchronous) {
         {
-          std::lock_guard<std::mutex> lock(encode->mutex);
-          encode->packet = std::move(packet);
+          std::lock_guard<std::mutex> lock(
+              encode->mutex);
+
+          encode->packet =
+              std::move(packet);
+
           encode->success = ok;
           encode->done = true;
         }
+
         encode->cv.notify_all();
+
       } else if (ok) {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        if (sendQueue.size() >= kMaxSendQueue) sendQueue.pop_front();
-        sendQueue.push_back(std::move(packet));
+        std::lock_guard<std::mutex> lock(
+            queueMutex);
+
+        if (sendQueue.size() >=
+            kMaxSendQueue) {
+          sendQueue.pop_front();
+        }
+
+        sendQueue.push_back(
+            std::move(packet));
       }
+
       queueCv.notify_all();
     }
   }
 
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     decodeBusy = false;
   }
-  markTaskExited(&opusTaskHandle, false);
+
+  markTaskExited(
+      &opusTaskHandle,
+      false);
 }
 
-bool waitTasksStopped(uint32_t timeoutMs) {
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeoutMs);
-  std::unique_lock<std::mutex> lock(queueMutex);
-  return queueCv.wait_until(lock, deadline, [] {
-    return inputTaskHandle == nullptr && outputTaskHandle == nullptr &&
-           opusTaskHandle == nullptr;
-  });
+bool waitTasksStopped(
+    uint32_t timeoutMs) {
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(
+          timeoutMs);
+
+  std::unique_lock<std::mutex> lock(
+      queueMutex);
+
+  return queueCv.wait_until(
+      lock,
+      deadline,
+      [] {
+        return inputTaskHandle ==
+                   nullptr &&
+               outputTaskHandle ==
+                   nullptr &&
+               opusTaskHandle ==
+                   nullptr;
+      });
 }
 
 void freeOpusTaskMemory() {
@@ -420,29 +708,47 @@ void freeOpusTaskMemory() {
     heap_caps_free(opusTaskStack);
     opusTaskStack = nullptr;
   }
+
   if (opusTaskTcb != nullptr) {
     heap_caps_free(opusTaskTcb);
     opusTaskTcb = nullptr;
   }
 }
 
-void requestStopAndWait(const char* reason) {
+void requestStopAndWait(
+    const char* reason) {
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     stopRequested = true;
     captureRunning = false;
     captureEncode = false;
+
     captureQueue.clear();
   }
+
   queueCv.notify_all();
-  if (!waitTasksStopped(kStopTimeoutMs)) {
-    LOG_ERR("METALIO-AUDIO", "%s: audio tasks did not stop cleanly", reason);
+
+  if (!waitTasksStopped(
+          kStopTimeoutMs)) {
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "%s: audio tasks did not stop cleanly",
+        reason);
+
     return;
   }
-  vTaskDelay(pdMS_TO_TICKS(30));
+
+  vTaskDelay(
+      pdMS_TO_TICKS(30));
+
   freeOpusTaskMemory();
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     started = false;
     stopRequested = false;
     outputBusy = false;
@@ -451,79 +757,165 @@ void requestStopAndWait(const char* reason) {
 }
 
 bool ensureStarted() {
-  std::lock_guard<std::mutex> lifecycleLock(taskLifecycleMutex);
+  std::lock_guard<std::mutex>
+      lifecycleLock(
+          taskLifecycleMutex);
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (started && inputTaskHandle && outputTaskHandle && opusTaskHandle) return true;
-    if (inputTaskHandle || outputTaskHandle || opusTaskHandle) return false;
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    if (started &&
+        inputTaskHandle &&
+        outputTaskHandle &&
+        opusTaskHandle) {
+      return true;
+    }
+
+    if (inputTaskHandle ||
+        outputTaskHandle ||
+        opusTaskHandle) {
+      return false;
+    }
+
     started = false;
     stopRequested = false;
   }
 
   TaskHandle_t input = nullptr;
-  if (xTaskCreateWithCaps(inputTask, "metalio_audio_in",
-                          kInputOutputTaskStackBytes, nullptr, kInputPriority,
-                          &input, kStackCaps) != pdPASS) {
-    LOG_ERR("METALIO-AUDIO",
-            "failed to create input task (SPIRAM free=%u largest=%u)",
-            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
-            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+
+  if (xTaskCreateWithCaps(
+          inputTask,
+          "metalio_audio_in",
+          kInputOutputTaskStackBytes,
+          nullptr,
+          kInputPriority,
+          &input,
+          kStackCaps) != pdPASS) {
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "failed to create input task "
+        "(SPIRAM free=%u largest=%u)",
+        static_cast<unsigned>(
+            heap_caps_get_free_size(
+                MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(
+            heap_caps_get_largest_free_block(
+                MALLOC_CAP_SPIRAM)));
+
     return false;
   }
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     inputTaskHandle = input;
   }
 
   TaskHandle_t output = nullptr;
-  if (xTaskCreateWithCaps(outputTask, "metalio_audio_out",
-                          kInputOutputTaskStackBytes, nullptr, kOutputPriority,
-                          &output, kStackCaps) != pdPASS) {
-    LOG_ERR("METALIO-AUDIO", "failed to create output task");
-    requestStopAndWait("output task creation rollback");
+
+  if (xTaskCreateWithCaps(
+          outputTask,
+          "metalio_audio_out",
+          kInputOutputTaskStackBytes,
+          nullptr,
+          kOutputPriority,
+          &output,
+          kStackCaps) != pdPASS) {
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "failed to create output task");
+
+    requestStopAndWait(
+        "output task creation rollback");
+
     return false;
   }
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     outputTaskHandle = output;
   }
 
-  opusTaskStack = static_cast<StackType_t*>(
-      heap_caps_malloc(kOpusTaskStackWords * sizeof(StackType_t), kStackCaps));
-  opusTaskTcb = static_cast<StaticTask_t*>(
-      heap_caps_malloc(sizeof(StaticTask_t),
-                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  opusTaskStack =
+      static_cast<StackType_t*>(
+          heap_caps_malloc(
+              kOpusTaskStackWords *
+                  sizeof(StackType_t),
+              kStackCaps));
 
-  if (opusTaskStack == nullptr || opusTaskTcb == nullptr) {
-    LOG_ERR("METALIO-AUDIO",
-            "failed to allocate Opus task memory (stack=%u bytes, SPIRAM free=%u largest=%u)",
-            static_cast<unsigned>(kOpusTaskStackBytes),
-            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
-            static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+  opusTaskTcb =
+      static_cast<StaticTask_t*>(
+          heap_caps_malloc(
+              sizeof(StaticTask_t),
+              MALLOC_CAP_INTERNAL |
+                  MALLOC_CAP_8BIT));
+
+  if (opusTaskStack == nullptr ||
+      opusTaskTcb == nullptr) {
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "failed to allocate Opus task "
+        "memory (stack=%u bytes, "
+        "SPIRAM free=%u largest=%u)",
+        static_cast<unsigned>(
+            kOpusTaskStackBytes),
+        static_cast<unsigned>(
+            heap_caps_get_free_size(
+                MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(
+            heap_caps_get_largest_free_block(
+                MALLOC_CAP_SPIRAM)));
+
     freeOpusTaskMemory();
-    requestStopAndWait("Opus task memory allocation rollback");
+
+    requestStopAndWait(
+        "Opus task memory allocation rollback");
+
     return false;
   }
 
-  opusTaskHandle = xTaskCreateStatic(
-      opusTask, "metalio_opus", kOpusTaskStackWords, nullptr, kOpusPriority,
-      opusTaskStack, opusTaskTcb);
+  opusTaskHandle =
+      xTaskCreateStatic(
+          opusTask,
+          "metalio_opus",
+          kOpusTaskStackWords,
+          nullptr,
+          kOpusPriority,
+          opusTaskStack,
+          opusTaskTcb);
 
   if (opusTaskHandle == nullptr) {
-    LOG_ERR("METALIO-AUDIO", "failed to create Opus task");
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "failed to create Opus task");
+
     freeOpusTaskMemory();
-    requestStopAndWait("Opus task creation rollback");
+
+    requestStopAndWait(
+        "Opus task creation rollback");
+
     return false;
   }
 
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     started = true;
   }
 
-  LOG_INF("METALIO-AUDIO",
-          "audio service started: input/output 8 KiB SPIRAM stacks, Opus 128 KiB SPIRAM stack");
+  LOG_INF(
+      "METALIO-AUDIO",
+      "audio service started: "
+      "input/output 16 KiB SPIRAM stacks, "
+      "Opus 128 KiB SPIRAM stack");
+
   queueCv.notify_all();
+
   return true;
 }
 
@@ -534,230 +926,536 @@ bool start() {
 }
 
 void stop() {
-  std::lock_guard<std::mutex> lifecycleLock(taskLifecycleMutex);
-  std::deque<std::shared_ptr<PlaybackRequest>> droppedPlayback;
-  std::deque<std::shared_ptr<EncodeRequest>> droppedEncode;
+  std::lock_guard<std::mutex>
+      lifecycleLock(
+          taskLifecycleMutex);
+
+  std::deque<
+      std::shared_ptr<PlaybackRequest>>
+      droppedPlayback;
+
+  std::deque<
+      std::shared_ptr<EncodeRequest>>
+      droppedEncode;
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (!started && !inputTaskHandle && !outputTaskHandle && !opusTaskHandle) return;
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    if (!started &&
+        !inputTaskHandle &&
+        !outputTaskHandle &&
+        !opusTaskHandle) {
+      return;
+    }
+
     stopRequested = true;
     captureRunning = false;
     captureEncode = false;
-    droppedPlayback.swap(playbackQueue);
-    droppedEncode.swap(encodeQueue);
+
+    droppedPlayback.swap(
+        playbackQueue);
+
+    droppedEncode.swap(
+        encodeQueue);
+
     decodeQueue.clear();
     sendQueue.clear();
     captureQueue.clear();
   }
-  queueCv.notify_all();
-  for (auto& request : droppedPlayback) cancelPlayback(request);
-  for (auto& request : droppedEncode) finishEncode(request, false);
 
-  if (!waitTasksStopped(kStopTimeoutMs)) {
-    LOG_ERR("METALIO-AUDIO", "audio tasks did not stop cleanly; resources retained");
+  queueCv.notify_all();
+
+  for (auto& request :
+       droppedPlayback) {
+    cancelPlayback(request);
+  }
+
+  for (auto& request :
+       droppedEncode) {
+    finishEncode(
+        request,
+        false);
+  }
+
+  if (!waitTasksStopped(
+          kStopTimeoutMs)) {
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "audio tasks did not stop cleanly; "
+        "resources retained");
+
     return;
   }
-  vTaskDelay(pdMS_TO_TICKS(30));
+
+  vTaskDelay(
+      pdMS_TO_TICKS(30));
 
   freeOpusTaskMemory();
 
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     playbackQueue.clear();
     encodeQueue.clear();
     decodeQueue.clear();
     sendQueue.clear();
     captureQueue.clear();
+
     outputBusy = false;
     decodeBusy = false;
+
     started = false;
     stopRequested = false;
   }
+
   {
-    std::lock_guard<std::mutex> lock(codecMutex);
+    std::lock_guard<std::mutex> lock(
+        codecMutex);
+
     opusEncoder.reset();
     opusDecoder.reset();
   }
-  LOG_INF("METALIO-AUDIO", "audio service stopped");
+
+  LOG_INF(
+      "METALIO-AUDIO",
+      "audio service stopped");
 }
 
-bool queuePcm(const int16_t* samples, std::size_t count) {
-  if (samples == nullptr || count == 0 || !ensureStarted()) return false;
-  auto request = std::make_shared<PlaybackRequest>();
-  request->pcm.assign(samples, samples + count);
-  {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (stopRequested || playbackQueue.size() >= kMaxPlaybackQueue) return false;
-    playbackQueue.push_back(std::move(request));
+bool queuePcm(
+    const int16_t* samples,
+    std::size_t count) {
+  if (samples == nullptr ||
+      count == 0 ||
+      !ensureStarted()) {
+    return false;
   }
+
+  auto request =
+      std::make_shared<
+          PlaybackRequest>();
+
+  request->pcm.assign(
+      samples,
+      samples + count);
+
+  {
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    if (stopRequested ||
+        playbackQueue.size() >=
+            kMaxPlaybackQueue) {
+      return false;
+    }
+
+    playbackQueue.push_back(
+        std::move(request));
+  }
+
   queueCv.notify_all();
+
   return true;
 }
 
-bool playPcm(const int16_t* samples, std::size_t count, uint32_t timeoutMs) {
-  if (samples == nullptr || count == 0 || !ensureStarted()) return false;
-  auto request = std::make_shared<PlaybackRequest>();
-  request->pcm.assign(samples, samples + count);
-  {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (stopRequested || playbackQueue.size() >= kMaxPlaybackQueue) return false;
-    playbackQueue.push_back(request);
-  }
-  queueCv.notify_all();
-
-  std::unique_lock<std::mutex> lock(request->mutex);
-  if (!request->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                            [&request] { return request->done; })) {
-    request->cancelled = true;
-    LOG_ERR("METALIO-AUDIO", "PCM playback timed out");
+bool playPcm(
+    const int16_t* samples,
+    std::size_t count,
+    uint32_t timeoutMs) {
+  if (samples == nullptr ||
+      count == 0 ||
+      !ensureStarted()) {
     return false;
   }
+
+  auto request =
+      std::make_shared<
+          PlaybackRequest>();
+
+  request->pcm.assign(
+      samples,
+      samples + count);
+
+  {
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    if (stopRequested ||
+        playbackQueue.size() >=
+            kMaxPlaybackQueue) {
+      return false;
+    }
+
+    playbackQueue.push_back(request);
+  }
+
+  queueCv.notify_all();
+
+  std::unique_lock<std::mutex> lock(
+      request->mutex);
+
+  if (!request->cv.wait_for(
+          lock,
+          std::chrono::milliseconds(
+              timeoutMs),
+          [&request] {
+            return request->done;
+          })) {
+    request->cancelled = true;
+
+    LOG_ERR(
+        "METALIO-AUDIO",
+        "PCM playback timed out");
+
+    return false;
+  }
+
   return request->success;
 }
 
-bool waitPlaybackDrained(uint32_t timeoutMs) {
-  std::unique_lock<std::mutex> lock(queueMutex);
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeoutMs);
-  // Include decodeInFlight: otherwise a caller could return before the Opus
-  // task has even placed decoded PCM onto the playback queue.
-  const bool drained = queueCv.wait_until(lock, deadline, [] {
-    return stopRequested || (decodeQueue.empty() && !decodeBusy &&
-                             playbackQueue.empty() && !outputBusy);
-  });
-  return drained && !stopRequested;
+bool waitPlaybackDrained(
+    uint32_t timeoutMs) {
+  std::unique_lock<std::mutex> lock(
+      queueMutex);
+
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(
+          timeoutMs);
+
+  const bool drained =
+      queueCv.wait_until(
+          lock,
+          deadline,
+          [] {
+            return stopRequested ||
+                   (decodeQueue.empty() &&
+                    !decodeBusy &&
+                    playbackQueue.empty() &&
+                    !outputBusy);
+          });
+
+  return drained &&
+         !stopRequested;
 }
 
 void flushPlayback() {
-  std::deque<std::shared_ptr<PlaybackRequest>> dropped;
+  std::deque<
+      std::shared_ptr<PlaybackRequest>>
+      dropped;
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    dropped.swap(playbackQueue);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    dropped.swap(
+        playbackQueue);
   }
-  for (auto& request : dropped) cancelPlayback(request);
+
+  for (auto& request :
+       dropped) {
+    cancelPlayback(request);
+  }
+
   queueCv.notify_all();
 }
 
-bool startCapture(bool encodeToOpus) {
-  if (!ensureStarted()) return false;
+bool startCapture(
+    bool encodeToOpus) {
+  if (!ensureStarted()) {
+    return false;
+  }
+
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (stopRequested) return false;
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    if (stopRequested) {
+      return false;
+    }
+
     captureRunning = true;
     captureEncode = encodeToOpus;
+
     captureQueue.clear();
-    if (encodeToOpus) sendQueue.clear();
+
+    if (encodeToOpus) {
+      sendQueue.clear();
+    }
   }
+
   queueCv.notify_all();
+
   return true;
 }
 
 void stopCapture() {
   {
-    std::lock_guard<std::mutex> lock(queueMutex);
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
     captureRunning = false;
     captureEncode = false;
     captureQueue.clear();
   }
+
   queueCv.notify_all();
 }
 
-bool readCapturedPcm(std::vector<int16_t>& samples, std::size_t maxSamples,
-                     uint32_t timeoutMs) {
+bool readCapturedPcm(
+    std::vector<int16_t>& samples,
+    std::size_t maxSamples,
+    uint32_t timeoutMs) {
   samples.clear();
-  if (maxSamples == 0 || !ensureStarted() || !startCapture(false)) return false;
 
-  std::unique_lock<std::mutex> lock(queueMutex);
-  if (!queueCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [] {
-        return stopRequested || !captureQueue.empty();
-      })) return false;
-  if (captureQueue.empty()) return false;
-  samples = std::move(captureQueue.front().samples);
-  captureQueue.pop_front();
-  if (samples.size() > maxSamples) samples.resize(maxSamples);
-  return true;
-}
-
-bool recordPcm(std::vector<int16_t>& samples, std::size_t count,
-               uint32_t timeoutMs) {
-  samples.clear();
-  if (count == 0 || !ensureStarted() || !startCapture(false)) return false;
-  samples.reserve(count);
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeoutMs);
-  while (samples.size() < count) {
-    std::unique_lock<std::mutex> lock(queueMutex);
-    if (!queueCv.wait_until(lock, deadline, [] {
-          return stopRequested || !captureQueue.empty();
-        })) return false;
-    if (stopRequested || captureQueue.empty()) return false;
-    auto frame = std::move(captureQueue.front().samples);
-    captureQueue.pop_front();
-    lock.unlock();
-    samples.insert(samples.end(), frame.begin(), frame.end());
-  }
-  samples.resize(count);
-  return true;
-}
-
-bool encodePcmFrame(const int16_t* samples, std::size_t count,
-                    std::vector<uint8_t>& packet) {
-  packet.clear();
-  if (samples == nullptr || count != kFrameSamples || !ensureStarted()) return false;
-  auto request = std::make_shared<EncodeRequest>();
-  request->target = EncodeTarget::Synchronous;
-  request->pcm.assign(samples, samples + count);
-  {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (stopRequested || encodeQueue.size() >= kMaxEncodeQueue) return false;
-    encodeQueue.push_back(request);
-  }
-  queueCv.notify_all();
-  std::unique_lock<std::mutex> lock(request->mutex);
-  if (!request->cv.wait_for(lock, std::chrono::milliseconds(2000),
-                            [&request] { return request->done; })) return false;
-  if (!request->success) return false;
-  packet = std::move(request->packet);
-  return true;
-}
-
-bool decodeOpusPacket(const uint8_t* packet, std::size_t packetBytes,
-                      std::vector<int16_t>& samples) {
-  samples.clear();
-  if (packet == nullptr || packetBytes == 0 || !ensureStarted()) return false;
-  std::lock_guard<std::mutex> lock(codecMutex);
-  return opusDecoder.decode(packet, packetBytes, samples);
-}
-
-bool pushOpusPacket(const uint8_t* packet, std::size_t packetBytes, bool wait) {
-  if (packet == nullptr || packetBytes == 0 || !ensureStarted()) return false;
-  std::unique_lock<std::mutex> lock(queueMutex);
-  if (wait) {
-    queueCv.wait(lock, [] {
-      return stopRequested || decodeQueue.size() < kMaxDecodeQueue;
-    });
-  } else if (decodeQueue.size() >= kMaxDecodeQueue) {
+  if (maxSamples == 0 ||
+      !ensureStarted() ||
+      !startCapture(false)) {
     return false;
   }
-  if (stopRequested) return false;
-  decodeQueue.push_back(DecodeRequest{std::vector<uint8_t>(packet, packet + packetBytes)});
-  lock.unlock();
-  queueCv.notify_all();
+
+  std::unique_lock<std::mutex> lock(
+      queueMutex);
+
+  if (!queueCv.wait_for(
+          lock,
+          std::chrono::milliseconds(
+              timeoutMs),
+          [] {
+            return stopRequested ||
+                   !captureQueue.empty();
+          })) {
+    return false;
+  }
+
+  if (captureQueue.empty()) {
+    return false;
+  }
+
+  samples =
+      std::move(
+          captureQueue.front().samples);
+
+  captureQueue.pop_front();
+
+  if (samples.size() >
+      maxSamples) {
+    samples.resize(maxSamples);
+  }
+
   return true;
 }
 
-bool popEncodedPacket(std::vector<uint8_t>& packet) {
+bool recordPcm(
+    std::vector<int16_t>& samples,
+    std::size_t count,
+    uint32_t timeoutMs) {
+  samples.clear();
+
+  if (count == 0 ||
+      !ensureStarted() ||
+      !startCapture(false)) {
+    return false;
+  }
+
+  samples.reserve(count);
+
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(
+          timeoutMs);
+
+  while (samples.size() < count) {
+    std::unique_lock<std::mutex> lock(
+        queueMutex);
+
+    if (!queueCv.wait_until(
+            lock,
+            deadline,
+            [] {
+              return stopRequested ||
+                     !captureQueue.empty();
+            })) {
+      return false;
+    }
+
+    if (stopRequested ||
+        captureQueue.empty()) {
+      return false;
+    }
+
+    auto frame =
+        std::move(
+            captureQueue.front().samples);
+
+    captureQueue.pop_front();
+
+    lock.unlock();
+
+    samples.insert(
+        samples.end(),
+        frame.begin(),
+        frame.end());
+  }
+
+  samples.resize(count);
+
+  return true;
+}
+
+bool encodePcmFrame(
+    const int16_t* samples,
+    std::size_t count,
+    std::vector<uint8_t>& packet) {
   packet.clear();
-  std::lock_guard<std::mutex> lock(queueMutex);
-  if (sendQueue.empty()) return false;
-  packet = std::move(sendQueue.front());
-  sendQueue.pop_front();
+
+  if (samples == nullptr ||
+      count != kFrameSamples ||
+      !ensureStarted()) {
+    return false;
+  }
+
+  auto request =
+      std::make_shared<
+          EncodeRequest>();
+
+  request->target =
+      EncodeTarget::Synchronous;
+
+  request->pcm.assign(
+      samples,
+      samples + count);
+
+  {
+    std::lock_guard<std::mutex> lock(
+        queueMutex);
+
+    if (stopRequested ||
+        encodeQueue.size() >=
+            kMaxEncodeQueue) {
+      return false;
+    }
+
+    encodeQueue.push_back(
+        request);
+  }
+
   queueCv.notify_all();
+
+  std::unique_lock<std::mutex> lock(
+      request->mutex);
+
+  if (!request->cv.wait_for(
+          lock,
+          std::chrono::milliseconds(2000),
+          [&request] {
+            return request->done;
+          })) {
+    return false;
+  }
+
+  if (!request->success) {
+    return false;
+  }
+
+  packet =
+      std::move(request->packet);
+
   return true;
 }
 
-void setOutputVolume(uint8_t volume) {
-  outputCodec.setOutputVolume(volume);
+bool decodeOpusPacket(
+    const uint8_t* packet,
+    std::size_t packetBytes,
+    std::vector<int16_t>& samples) {
+  samples.clear();
+
+  if (packet == nullptr ||
+      packetBytes == 0 ||
+      !ensureStarted()) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(
+      codecMutex);
+
+  return opusDecoder.decode(
+      packet,
+      packetBytes,
+      samples);
+}
+
+bool pushOpusPacket(
+    const uint8_t* packet,
+    std::size_t packetBytes,
+    bool wait) {
+  if (packet == nullptr ||
+      packetBytes == 0 ||
+      !ensureStarted()) {
+    return false;
+  }
+
+  std::unique_lock<std::mutex> lock(
+      queueMutex);
+
+  if (wait) {
+    queueCv.wait(
+        lock,
+        [] {
+          return stopRequested ||
+                 decodeQueue.size() <
+                     kMaxDecodeQueue;
+        });
+  } else if (
+      decodeQueue.size() >=
+      kMaxDecodeQueue) {
+    return false;
+  }
+
+  if (stopRequested) {
+    return false;
+  }
+
+  decodeQueue.push_back(
+      DecodeRequest{
+          std::vector<uint8_t>(
+              packet,
+              packet + packetBytes)});
+
+  lock.unlock();
+
+  queueCv.notify_all();
+
+  return true;
+}
+
+bool popEncodedPacket(
+    std::vector<uint8_t>& packet) {
+  packet.clear();
+
+  std::lock_guard<std::mutex> lock(
+      queueMutex);
+
+  if (sendQueue.empty()) {
+    return false;
+  }
+
+  packet =
+      std::move(
+          sendQueue.front());
+
+  sendQueue.pop_front();
+
+  queueCv.notify_all();
+
+  return true;
+}
+
+void setOutputVolume(
+    uint8_t volume) {
+  outputCodec.setOutputVolume(
+      volume);
 }
 
 uint8_t outputVolume() {
@@ -766,22 +1464,49 @@ uint8_t outputVolume() {
 
 void playTestTone() {
   constexpr uint32_t kRate = 16000;
-  constexpr std::size_t kSamples = kRate / 2;
-  constexpr double kPi = 3.14159265358979323846;
-  constexpr double kFrequency = 1000.0;
-  constexpr double kAmplitude = 8000.0;
-  static std::array<int16_t, kSamples> tone{};
+
+  constexpr std::size_t kSamples =
+      kRate / 2;
+
+  constexpr double kPi =
+      3.14159265358979323846;
+
+  constexpr double kFrequency =
+      1000.0;
+
+  constexpr double kAmplitude =
+      8000.0;
+
+  static std::array<int16_t, kSamples>
+      tone{};
+
   static bool initialized = false;
+
   if (!initialized) {
-    for (std::size_t i = 0; i < tone.size(); ++i) {
-      tone[i] = static_cast<int16_t>(std::sin(
-          2.0 * kPi * static_cast<double>(i) / static_cast<double>(kRate) *
-          kFrequency) * kAmplitude);
+    for (std::size_t i = 0;
+         i < tone.size();
+         ++i) {
+      tone[i] =
+          static_cast<int16_t>(
+              std::sin(
+                  2.0 * kPi *
+                  static_cast<double>(i) /
+                  static_cast<double>(kRate) *
+                  kFrequency) *
+              kAmplitude);
     }
+
     initialized = true;
   }
-  LOG_INF("METALIO-AUDIO", "local 1 kHz speaker test");
-  (void)playPcm(tone.data(), tone.size(), 3000);
+
+  LOG_INF(
+      "METALIO-AUDIO",
+      "local 1 kHz speaker test");
+
+  (void)playPcm(
+      tone.data(),
+      tone.size(),
+      3000);
 }
 
 }  // namespace metalio_audio_service
@@ -789,33 +1514,93 @@ void playTestTone() {
 #else
 
 namespace metalio_audio_service {
-bool start() { return false; }
+
+bool start() {
+  return false;
+}
+
 void stop() {}
-bool playPcm(const int16_t*, std::size_t, uint32_t) { return false; }
-bool queuePcm(const int16_t*, std::size_t) { return false; }
-bool waitPlaybackDrained(uint32_t) { return false; }
+
+bool playPcm(
+    const int16_t*,
+    std::size_t,
+    uint32_t) {
+  return false;
+}
+
+bool queuePcm(
+    const int16_t*,
+    std::size_t) {
+  return false;
+}
+
+bool waitPlaybackDrained(
+    uint32_t) {
+  return false;
+}
+
 void flushPlayback() {}
-bool startCapture(bool) { return false; }
+
+bool startCapture(bool) {
+  return false;
+}
+
 void stopCapture() {}
-bool readCapturedPcm(std::vector<int16_t>& samples, std::size_t, uint32_t) {
-  samples.clear(); return false;
+
+bool readCapturedPcm(
+    std::vector<int16_t>& samples,
+    std::size_t,
+    uint32_t) {
+  samples.clear();
+  return false;
 }
-bool recordPcm(std::vector<int16_t>& samples, std::size_t, uint32_t) {
-  samples.clear(); return false;
+
+bool recordPcm(
+    std::vector<int16_t>& samples,
+    std::size_t,
+    uint32_t) {
+  samples.clear();
+  return false;
 }
-bool encodePcmFrame(const int16_t*, std::size_t, std::vector<uint8_t>& packet) {
-  packet.clear(); return false;
+
+bool encodePcmFrame(
+    const int16_t*,
+    std::size_t,
+    std::vector<uint8_t>& packet) {
+  packet.clear();
+  return false;
 }
-bool decodeOpusPacket(const uint8_t*, std::size_t, std::vector<int16_t>& samples) {
-  samples.clear(); return false;
+
+bool decodeOpusPacket(
+    const uint8_t*,
+    std::size_t,
+    std::vector<int16_t>& samples) {
+  samples.clear();
+  return false;
 }
-bool pushOpusPacket(const uint8_t*, std::size_t, bool) { return false; }
-bool popEncodedPacket(std::vector<uint8_t>& packet) {
-  packet.clear(); return false;
+
+bool pushOpusPacket(
+    const uint8_t*,
+    std::size_t,
+    bool) {
+  return false;
 }
-void setOutputVolume(uint8_t) {}
-uint8_t outputVolume() { return 0; }
+
+bool popEncodedPacket(
+    std::vector<uint8_t>& packet) {
+  packet.clear();
+  return false;
+}
+
+void setOutputVolume(
+    uint8_t) {}
+
+uint8_t outputVolume() {
+  return 0;
+}
+
 void playTestTone() {}
+
 }  // namespace metalio_audio_service
 
 #endif
