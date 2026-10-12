@@ -11,6 +11,8 @@ namespace freeink {
 namespace metalio {
 
 constexpr uint32_t AUDIO_RATE = 16000;
+constexpr int AUDIO_CODEC_DMA_DESC_NUM = 6;
+constexpr int AUDIO_CODEC_DMA_FRAME_NUM = 240;
 
 struct AudioBus {
   i2s_chan_handle_t tx = nullptr;
@@ -50,9 +52,8 @@ inline void logUart(const char* command) {
   while (bus.uart.available() && n < sizeof(buf) - 1)
     buf[n++] = static_cast<char>(bus.uart.read());
   buf[n] = 0;
-
-  Serial.printf("[METALIO-AUDIO] UART %s -> %u bytes: ",
-                command, static_cast<unsigned>(n));
+  Serial.printf("[METALIO-AUDIO] UART %s -> %u bytes: ", command,
+                static_cast<unsigned>(n));
   for (size_t i = 0; i < n; ++i) {
     unsigned char c = static_cast<unsigned char>(buf[i]);
     if (c >= 32 && c <= 126) Serial.write(c);
@@ -63,17 +64,12 @@ inline void logUart(const char* command) {
 
 inline void destroyAudioBus() {
   auto& bus = audioBus();
-
-  if (bus.txEnabled && bus.tx) {
+  if (bus.txEnabled && bus.tx)
     logErr("TX disable", i2s_channel_disable(bus.tx));
-  }
-  if (bus.rxEnabled && bus.rx) {
+  if (bus.rxEnabled && bus.rx)
     logErr("RX disable", i2s_channel_disable(bus.rx));
-  }
-
   bus.txEnabled = false;
   bus.rxEnabled = false;
-
   if (bus.tx) {
     logErr("TX delete", i2s_del_channel(bus.tx));
     bus.tx = nullptr;
@@ -82,14 +78,12 @@ inline void destroyAudioBus() {
     logErr("RX delete", i2s_del_channel(bus.rx));
     bus.rx = nullptr;
   }
-
   bus.uart.end();
 }
 
 inline bool acquireAudio(const void* owner, bool input) {
   auto& bus = audioBus();
   const void*& slot = input ? bus.microphone : bus.speaker;
-
   if (slot != nullptr) return slot == owner;
 
   if (bus.tx == nullptr || bus.rx == nullptr) {
@@ -99,7 +93,6 @@ inline bool acquireAudio(const void* owner, bool input) {
     }
 
     logPins();
-
     bus.uart.begin(115200, SERIAL_8N1, 47, 48);
 
     size_t n = bus.uart.print("AT+RX=2\r\n");
@@ -121,11 +114,21 @@ inline bool acquireAudio(const void* owner, bool input) {
       return false;
     }
     bus.uart.flush();
+    delay(500);
     logUart("AT+MODE=1");
 
-    i2s_chan_config_t chan =
-        I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
-    chan.auto_clear = true;
+    i2s_chan_config_t chan = {
+        .id = I2S_NUM_0,
+        .role = I2S_ROLE_SLAVE,
+        .dma_desc_num = AUDIO_CODEC_DMA_DESC_NUM,
+        .dma_frame_num = AUDIO_CODEC_DMA_FRAME_NUM,
+        .auto_clear_after_cb = true,
+        .auto_clear_before_cb = false,
+        .allow_pd = false,
+        .intr_priority = 0,
+        .tx_destination = I2S_DESTINATION_DMA,
+        .rx_destination = I2S_DESTINATION_DMA,
+    };
 
     esp_err_t err = i2s_new_channel(&chan, &bus.tx, &bus.rx);
     logErr("i2s_new_channel", err);
@@ -137,30 +140,40 @@ inline bool acquireAudio(const void* owner, bool input) {
     }
 
     i2s_std_config_t config = {};
-    config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_RATE);
-    config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+    config.clk_cfg.sample_rate_hz = AUDIO_RATE;
+    config.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+#if SOC_I2S_HW_VERSION_2
+    config.clk_cfg.ext_clk_freq_hz = 0;
+#endif
+    config.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    config.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_32BIT;
+    config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
+    config.slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
+    config.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+    config.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_32BIT;
+    config.slot_cfg.ws_pol = false;
+    config.slot_cfg.bit_shift = true;
+#if SOC_I2S_HW_VERSION_2
+    config.slot_cfg.left_align = true;
+    config.slot_cfg.big_endian = false;
+    config.slot_cfg.bit_order_lsb = false;
+#endif
     config.gpio_cfg.mclk = I2S_GPIO_UNUSED;
-    config.gpio_cfg.bclk =
-        static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.bclk);
-    config.gpio_cfg.ws =
-        static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.lrclk);
-    config.gpio_cfg.dout =
-        static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.dout);
-    config.gpio_cfg.din =
-        static_cast<gpio_num_t>(BoardConfig::ACTIVE.mic.data);
+    config.gpio_cfg.bclk = static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.bclk);
+    config.gpio_cfg.ws = static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.lrclk);
+    config.gpio_cfg.dout = static_cast<gpio_num_t>(BoardConfig::ACTIVE.audio.dout);
+    config.gpio_cfg.din = static_cast<gpio_num_t>(BoardConfig::ACTIVE.mic.data);
 
     const esp_err_t txErr = i2s_channel_init_std_mode(bus.tx, &config);
     logErr("TX init", txErr);
     const esp_err_t rxErr = i2s_channel_init_std_mode(bus.rx, &config);
     logErr("RX init", rxErr);
-
     if (txErr != ESP_OK || rxErr != ESP_OK) {
       destroyAudioBus();
       return false;
     }
 
-    Serial.println("[METALIO-AUDIO] I2S init complete: role=SLAVE rate=16000 width=32 stereo");
+    Serial.println("[METALIO-AUDIO] I2S init complete: Zao-compatible SLAVE / DMA 6x240 / 16k / 32-bit stereo / WS32 / bit_shift=1");
   }
 
   slot = owner;
@@ -170,39 +183,26 @@ inline bool acquireAudio(const void* owner, bool input) {
 inline bool startAudio(const void* owner, bool input) {
   auto& bus = audioBus();
   if ((input ? bus.microphone : bus.speaker) != owner) return false;
-
   bool& enabled = input ? bus.rxEnabled : bus.txEnabled;
   if (enabled) return true;
-
   i2s_chan_handle_t channel = input ? bus.rx : bus.tx;
-  if (!channel) {
-    Serial.printf("[METALIO-AUDIO] startAudio %s: NULL channel\n",
-                  input ? "RX" : "TX");
-    return false;
-  }
-
+  if (!channel) return false;
   Serial.printf("[METALIO-AUDIO] enabling %s channel=%p\n",
                 input ? "RX" : "TX", static_cast<void*>(channel));
-
   const esp_err_t err = i2s_channel_enable(channel);
   logErr(input ? "RX enable" : "TX enable", err);
   if (err != ESP_OK) return false;
-
   enabled = true;
-  Serial.printf("[METALIO-AUDIO] %s channel enabled\n",
-                input ? "RX" : "TX");
   return true;
 }
 
 inline void stopAudio(const void* owner, bool input) {
   auto& bus = audioBus();
   if ((input ? bus.microphone : bus.speaker) != owner) return;
-
   bool& enabled = input ? bus.rxEnabled : bus.txEnabled;
   if (enabled) {
     i2s_chan_handle_t channel = input ? bus.rx : bus.tx;
-    if (channel) logErr(input ? "RX disable" : "TX disable",
-                        i2s_channel_disable(channel));
+    if (channel) logErr(input ? "RX disable" : "TX disable", i2s_channel_disable(channel));
     enabled = false;
   }
 }
@@ -211,12 +211,9 @@ inline void releaseAudio(const void* owner, bool input) {
   auto& bus = audioBus();
   const void*& slot = input ? bus.microphone : bus.speaker;
   if (slot != owner) return;
-
   stopAudio(owner, input);
   slot = nullptr;
-
-  if (bus.speaker == nullptr && bus.microphone == nullptr)
-    destroyAudioBus();
+  if (bus.speaker == nullptr && bus.microphone == nullptr) destroyAudioBus();
 }
 
 }  // namespace metalio
