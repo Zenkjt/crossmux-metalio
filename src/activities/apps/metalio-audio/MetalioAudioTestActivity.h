@@ -1,52 +1,50 @@
 #pragma once
 
-#include <array>
-#include <cstdint>
+#include "activities/Activity.h"
 
-#include "activities/UiListActivity.h"
-
-class MetalioAudioTestActivity final : public UiListActivity {
+class MetalioAudioTestActivity final : public Activity {
  public:
   MetalioAudioTestActivity(
       GfxRenderer& renderer,
       MappedInputManager& mappedInput)
-      : UiListActivity("MetalioAudioTest", renderer, mappedInput) {}
+      : Activity("MetalioMusic", renderer, mappedInput) {}
 
   ~MetalioAudioTestActivity() override = default;
 
   void onEnter() override;
   void onExit() override;
-
- protected:
-  int listCount() const override {
-    return kActionCount;
-  }
-
-  const char* headerTitle() const override {
-    return "Metalio Audio Test";
-  }
-
-  void buildScreen(UiScreen& screen) override;
-  void activateIndex(int index) override;
-
-  void onBackButton() override {
-    finish();
-  }
+  void loop() override;
+  void render(RenderLock&&) override;
 
  private:
-  static constexpr int kSpeakerTest = 0;
-  static constexpr int kMicTest = 1;
-  static constexpr int kOpusLoopbackTest = 2;
-  static constexpr int kStatusRow = 3;
-  static constexpr int kActionCount = 4;
+  enum class HitTarget {
+    None,
+    Menu,
+    Previous,
+    Next,
+    PlayPause,
+    Center,
+    VolumeUp,
+    VolumeDown,
+  };
 
-  void rebuildRows();
-  void setStatus(const char* text);
+  static HitTarget hitTarget(int x, int y);
 
-  bool runMicTest();
-  bool runOpusLoopbackTest();
+  void adjustVolume(int delta);
+  void togglePlayPause();
+  void requestRedraw();
 
-  std::array<freeink::ui::ListItem, kActionCount> rows{};
+  bool loadSkin();
+  void drawSkin();
 
-  char statusText[96] = "Ready";
+  bool skinLoaded_ = false;
+  bool playing_ = false;
+
+  uint8_t volume_ = 70;
+
+  uint32_t volumeOverlayUntil_ = 0;
+  char volumeText_[24] = {};
+
+  const char* title_ = "Metalio Music";
+  const char* artist_ = "Select music from /Music";
 };
