@@ -6,7 +6,8 @@
 #include <cstdio>
 
 #include <Bitmap.h>
-#include <FsHelpers.h>
+#include <HalDisplay.h>
+#include <HalStorage.h>
 
 #include "MetalioAudioService.h"
 #include "fontIds.h"
@@ -16,19 +17,18 @@ namespace {
 constexpr const char* TAG = "MUSIC";
 
 /*
- * The supplied iPod skin is a real 4-bit grayscale BMP.
+ * Full iPod body skin.
  *
- * It is deliberately kept as an external SD asset rather than converted
- * into a huge C array.
+ * The supplied BMP stays as a real 4-bit grayscale BMP.
  */
 constexpr const char* kSkinPath =
-    "/sdcard/metalio/e-ink/ipod/Ipod.bmp.bmp";
+    "/metalio/e-ink/ipod/Ipod.bmp.bmp";
 
 /*
- * iPod-style invisible touch zones.
+ * Invisible touch zones.
  *
- * The complete iPod body is rendered from the BMP.
- * Nothing is drawn over these controls.
+ * These coordinates are logical Portrait 480x800 coordinates.
+ * They are hitboxes only; nothing is drawn for them.
  */
 
 constexpr Rect kMenuHit{
@@ -67,9 +67,9 @@ constexpr Rect kCenterHit{
 };
 
 /*
- * Approximate click-wheel geometry.
+ * Click-wheel hitbox.
  *
- * These are hitboxes only. The wheel itself comes from the supplied image.
+ * The actual wheel remains entirely inside the supplied BMP.
  */
 constexpr int kWheelCx = 240;
 constexpr int kWheelCy = 600;
@@ -83,7 +83,6 @@ bool contains(
     const Rect& rect,
     const int x,
     const int y) {
-
   return
       x >= rect.x &&
       x < rect.x + rect.width &&
@@ -98,7 +97,6 @@ bool inEllipse(
     const int cy,
     const int rx,
     const int ry) {
-
   const int dx = x - cx;
   const int dy = y - cy;
 
@@ -123,25 +121,121 @@ void MetalioAudioTestActivity::onEnter() {
   volume_ =
       metalio_audio_service::outputVolume();
 
-  loadSkin();
+  playing_ = false;
+  volumeOverlayUntil_ = 0;
+  volumeText_[0] = '\0';
+
+  skinLoaded_ = loadSkin();
 
   requestRedraw();
 }
 
 void MetalioAudioTestActivity::onExit() {
+  if (skinBitmap_ != nullptr) {
+    delete skinBitmap_;
+    skinBitmap_ = nullptr;
+  }
+
+  skinFile_.close();
+  skinLoaded_ = false;
+
   Activity::onExit();
 }
 
 bool MetalioAudioTestActivity::loadSkin() {
+  if (skinBitmap_ != nullptr) {
+    delete skinBitmap_;
+    skinBitmap_ = nullptr;
+  }
+
+  skinFile_.close();
+  skinLoaded_ = false;
+
   /*
-   * Skin loading is intentionally deferred until the first render.
+   * Use CrossMux's real storage abstraction.
    *
-   * Bitmap owns the SD file handle internally.
-   *
-   * The renderer already supports BMP rendering and 4-bit grayscale.
+   * "MUSIC" is only the logical owner/tag; it does not alter
+   * the SD-card path.
    */
+  if (!Storage.openFileForRead(
+          "MUSIC",
+          kSkinPath,
+          skinFile_)) {
+    LOG_ERR(
+        TAG,
+        "Cannot open iPod skin: %s",
+        kSkinPath);
+
+    return false;
+  }
+
+  /*
+   * Keep the original 4-bit grayscale BMP.
+   *
+   * Dithering is disabled here because the supplied image is
+   * already prepared as a 4-bit asset.
+   */
+  skinBitmap_ =
+      new Bitmap(
+          skinFile_,
+          false,
+          false);
+
+  if (skinBitmap_ == nullptr) {
+    LOG_ERR(
+        TAG,
+        "OOM creating iPod Bitmap");
+
+    skinFile_.close();
+    return false;
+  }
+
+  const BmpReaderError error =
+      skinBitmap_->parseHeaders();
+
+  if (error != BmpReaderError::Ok) {
+    LOG_ERR(
+        TAG,
+        "Invalid iPod BMP: %s",
+        Bitmap::errorToString(error));
+
+    delete skinBitmap_;
+    skinBitmap_ = nullptr;
+
+    skinFile_.close();
+
+    return false;
+  }
+
+  /*
+   * Do not silently accept a converted 1-bit asset.
+   * The supplied skin is expected to remain 4-bit.
+   */
+  if (skinBitmap_->getBpp() != 4) {
+    LOG_ERR(
+        TAG,
+        "Expected 4-bit iPod BMP, got %u-bit",
+        static_cast<unsigned>(
+            skinBitmap_->getBpp()));
+
+    delete skinBitmap_;
+    skinBitmap_ = nullptr;
+
+    skinFile_.close();
+
+    return false;
+  }
+
+  LOG_INF(
+      TAG,
+      "iPod skin loaded: %dx%d %u-bit",
+      skinBitmap_->getWidth(),
+      skinBitmap_->getHeight(),
+      static_cast<unsigned>(
+          skinBitmap_->getBpp()));
 
   skinLoaded_ = true;
+
   return true;
 }
 
@@ -154,16 +248,10 @@ MetalioAudioTestActivity::hitTarget(
     const int x,
     const int y) {
 
-  /*
-   * MENU
-   */
   if (contains(kMenuHit, x, y)) {
     return HitTarget::Menu;
   }
 
-  /*
-   * Previous / Next
-   */
   if (contains(kPreviousHit, x, y)) {
     return HitTarget::Previous;
   }
@@ -172,16 +260,10 @@ MetalioAudioTestActivity::hitTarget(
     return HitTarget::Next;
   }
 
-  /*
-   * Play / Pause
-   */
   if (contains(kPlayPauseHit, x, y)) {
     return HitTarget::PlayPause;
   }
 
-  /*
-   * Center button.
-   */
   if (contains(kCenterHit, x, y)) {
     return HitTarget::Center;
   }
@@ -196,33 +278,30 @@ MetalioAudioTestActivity::hitTarget(
           kWheelCy,
           kWheelOuterRx,
           kWheelOuterRy)) {
-
     return HitTarget::None;
   }
 
-  /*
-   * Center of wheel.
-   */
   const int dx = x - kWheelCx;
   const int dy = y - kWheelCy;
 
+  /*
+   * Center button.
+   */
   if (
       dx * dx + dy * dy <=
       kWheelCenterRadius * kWheelCenterRadius) {
-
     return HitTarget::Center;
   }
 
   /*
-   * Outer wheel sectors.
-
-       UP
-        |
-   LEFT-+-RIGHT
-        |
-      DOWN
-  */
-
+   * Outer wheel:
+   *
+   *          Volume +
+   *              |
+   * Previous ----+---- Next
+   *              |
+   *          Volume -
+   */
   if (std::abs(dy) >= std::abs(dx)) {
     return
         dy < 0
@@ -284,7 +363,7 @@ void MetalioAudioTestActivity::loop() {
   int y = 0;
 
   /*
-   * Touch control.
+   * Touch controls.
    */
   if (mappedInput.wasScreenTapped(x, y)) {
 
@@ -295,12 +374,16 @@ void MetalioAudioTestActivity::loop() {
         return;
 
       case HitTarget::Previous:
-        LOG_INF(TAG, "Previous track");
+        LOG_INF(
+            TAG,
+            "Previous track");
         requestRedraw();
         return;
 
       case HitTarget::Next:
-        LOG_INF(TAG, "Next track");
+        LOG_INF(
+            TAG,
+            "Next track");
         requestRedraw();
         return;
 
@@ -323,61 +406,63 @@ void MetalioAudioTestActivity::loop() {
   }
 
   /*
-   * Physical / logical controls.
+   * Back.
    */
-
-  if (
-      mappedInput.wasReleased(
+  if (mappedInput.wasReleased(
           MappedInputManager::Button::Back)) {
-
     finish();
     return;
   }
 
-  if (
-      mappedInput.wasReleased(
+  /*
+   * Up / Down = volume.
+   */
+  if (mappedInput.wasReleased(
           MappedInputManager::Button::Up)) {
-
     adjustVolume(+5);
     return;
   }
 
-  if (
-      mappedInput.wasReleased(
+  if (mappedInput.wasReleased(
           MappedInputManager::Button::Down)) {
-
     adjustVolume(-5);
     return;
   }
 
-  if (
-      mappedInput.wasReleased(
+  /*
+   * Left / Right = previous / next.
+   */
+  if (mappedInput.wasReleased(
           MappedInputManager::Button::Left)) {
+    LOG_INF(
+        TAG,
+        "Previous track");
 
-    LOG_INF(TAG, "Previous track");
     requestRedraw();
     return;
   }
 
-  if (
-      mappedInput.wasReleased(
+  if (mappedInput.wasReleased(
           MappedInputManager::Button::Right)) {
+    LOG_INF(
+        TAG,
+        "Next track");
 
-    LOG_INF(TAG, "Next track");
     requestRedraw();
     return;
   }
 
-  if (
-      mappedInput.wasReleased(
+  /*
+   * Confirm = play/pause.
+   */
+  if (mappedInput.wasReleased(
           MappedInputManager::Button::Confirm)) {
-
     togglePlayPause();
     return;
   }
 
   /*
-   * Expire temporary volume overlay.
+   * Temporary volume overlay timeout.
    */
   if (
       volumeOverlayUntil_ != 0 &&
@@ -389,29 +474,8 @@ void MetalioAudioTestActivity::loop() {
 }
 
 void MetalioAudioTestActivity::drawSkin() {
-
-  /*
-   * Open the BMP from SD and let the existing CrossMux Bitmap
-   * implementation handle the 4-bit grayscale conversion.
-   *
-   * The renderer has native:
-   *
-   *   drawBitmap(...)
-   *   drawBitmapCropToFill(...)
-   *
-   * so there is no reason to convert the supplied image into
-   * another representation.
-   */
-
-  auto file = FsHelpers::openFile(
-      kSkinPath,
-      "rb");
-
-  if (!file) {
-    LOG_ERR(
-        TAG,
-        "Cannot open iPod skin: %s",
-        kSkinPath);
+  if (!skinLoaded_ ||
+      skinBitmap_ == nullptr) {
 
     renderer.clearScreen();
 
@@ -430,20 +494,17 @@ void MetalioAudioTestActivity::drawSkin() {
     return;
   }
 
-  Bitmap bitmap(
-      *file,
-      false,
-      false);
-
-  const BmpReaderError error =
-      bitmap.parseHeaders();
-
-  if (error != BmpReaderError::Ok) {
+  /*
+   * Bitmap::rewindToData() is required before rendering
+   * after parseHeaders().
+   */
+  if (
+      skinBitmap_->rewindToData() !=
+      BmpReaderError::Ok) {
 
     LOG_ERR(
         TAG,
-        "Invalid iPod BMP: %s",
-        Bitmap::errorToString(error));
+        "Failed to rewind iPod BMP");
 
     renderer.clearScreen();
 
@@ -451,24 +512,37 @@ void MetalioAudioTestActivity::drawSkin() {
         UI_12_FONT_ID,
         30,
         50,
-        "Invalid iPod BMP");
+        "iPod skin rewind failed");
 
     return;
   }
 
   /*
-   * Fit the complete supplied iPod image into
-   * the logical 480x800 screen.
+   * Render the entire iPod body.
    *
-   * If the supplied BMP is already 480x800,
-   * this becomes a 1:1 render.
+   * No conversion to 1-bit.
    */
-  renderer.drawBitmapCropToFill(
-      bitmap,
-      0,
-      0,
-      renderer.getScreenWidth(),
-      renderer.getScreenHeight());
+  if (!renderer.drawBitmap(
+          *skinBitmap_,
+          0,
+          0,
+          renderer.getScreenWidth(),
+          renderer.getScreenHeight(),
+          0,
+          0)) {
+
+    LOG_ERR(
+        TAG,
+        "Failed to render iPod skin");
+
+    renderer.clearScreen();
+
+    renderer.drawText(
+        UI_12_FONT_ID,
+        30,
+        50,
+        "iPod skin render failed");
+  }
 }
 
 void MetalioAudioTestActivity::render(
@@ -478,21 +552,16 @@ void MetalioAudioTestActivity::render(
       GfxRenderer::Orientation::Portrait);
 
   /*
-   * 1. Draw the complete iPod body.
+   * 1. Complete iPod body.
    */
   drawSkin();
 
   /*
    * 2. Dynamic LCD content.
    *
-   * This is deliberately drawn only inside the
-   * LCD area of the supplied skin.
-   *
-   * These coordinates are the initial reference
-   * positions and will be tuned against the actual
-   * BMP once displayed on hardware.
+   * Initial coordinates. These are the only pixels
+   * intentionally drawn over the supplied skin.
    */
-
   constexpr int kDisplayX = 92;
   constexpr int kDisplayY = 93;
   constexpr int kDisplayWidth = 296;
@@ -520,23 +589,27 @@ void MetalioAudioTestActivity::render(
    */
   const char* state =
       playing_
-          ? "▶"
-          : "Ⅱ";
+          ? "PLAY"
+          : "PAUSE";
+
+  const int stateWidth =
+      renderer.getTextWidth(
+          UI_10_FONT_ID,
+          state);
 
   renderer.drawText(
       UI_10_FONT_ID,
-      kDisplayX + kDisplayWidth -
-          renderer.getTextWidth(
-              UI_10_FONT_ID,
-              state),
+      kDisplayX +
+          kDisplayWidth -
+          stateWidth,
       kDisplayY,
       state);
 
   /*
    * Progress bar.
    *
-   * Real track duration/position will be connected
-   * when the decoder/player layer is added.
+   * Placeholder until the real decoder/player
+   * provides position and duration.
    */
   constexpr int kProgressY =
       kDisplayY + 82;
@@ -549,7 +622,6 @@ void MetalioAudioTestActivity::render(
       true);
 
   if (playing_) {
-
     renderer.fillRect(
         kDisplayX,
         kProgressY,
@@ -564,24 +636,27 @@ void MetalioAudioTestActivity::render(
       kProgressY + 22,
       "00:00");
 
-  const char* duration =
+  constexpr const char* kDuration =
       "00:00";
+
+  const int durationWidth =
+      renderer.getTextWidth(
+          UI_10_FONT_ID,
+          kDuration);
 
   renderer.drawText(
       UI_10_FONT_ID,
       kDisplayX +
           kDisplayWidth -
-          renderer.getTextWidth(
-              UI_10_FONT_ID,
-              duration),
+          durationWidth,
       kProgressY + 22,
-      duration);
+      kDuration);
 
   /*
-   * Temporary volume overlay.
+   * Temporary volume feedback only.
    *
-   * It appears only when volume changes,
-   * so the iPod body remains visually clean.
+   * There are deliberately no permanent
+   * Volume +/- buttons on the UI.
    */
   if (
       volumeOverlayUntil_ != 0 &&
@@ -610,9 +685,6 @@ void MetalioAudioTestActivity::render(
         false);
   }
 
-  /*
-   * Full skin + dynamic screen.
-   */
   renderer.displayBuffer(
       HalDisplay::FAST_REFRESH);
 }
