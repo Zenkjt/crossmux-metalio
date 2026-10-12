@@ -1,6 +1,12 @@
 #pragma once
 
+#include <cstdint>
+
+#include <HalStorage.h>
+
 #include "activities/Activity.h"
+
+class Bitmap;
 
 class MetalioAudioTestActivity final : public Activity {
  public:
@@ -44,6 +50,9 @@ class MetalioAudioTestActivity final : public Activity {
 
   uint32_t volumeOverlayUntil_ = 0;
   char volumeText_[24] = {};
+
+  HalFile skinFile_;
+  Bitmap* skinBitmap_ = nullptr;
 
   const char* title_ = "Metalio Music";
   const char* artist_ = "Select music from /Music";
