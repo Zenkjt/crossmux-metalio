@@ -13,7 +13,7 @@ class MetalioAudioTestActivity final : public Activity {
   MetalioAudioTestActivity(
       GfxRenderer& renderer,
       MappedInputManager& mappedInput)
-      : Activity("MetalioMusic", renderer, mappedInput) {}
+      : Activity("MusicPlayer", renderer, mappedInput) {}
 
   ~MetalioAudioTestActivity() override = default;
 
@@ -45,15 +45,13 @@ class MetalioAudioTestActivity final : public Activity {
 
   bool skinLoaded_ = false;
   bool playing_ = false;
+  bool firstRender_ = true;
 
   uint8_t volume_ = 70;
-
-  uint32_t volumeOverlayUntil_ = 0;
-  char volumeText_[24] = {};
 
   HalFile skinFile_;
   Bitmap* skinBitmap_ = nullptr;
 
-  const char* title_ = "Metalio Music";
-  const char* artist_ = "Select music from /Music";
+  const char* title_ = "Music Player";
+  const char* artist_ = "Select music from /music";
 };
