@@ -1,18 +1,37 @@
 {
   "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/schema/library.json",
   "name": "MetalioMusicPlayer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "iPod-style SD music player for Metalio E-INK4, MP3 + Ogg Vorbis, using the CrossMux/Zao audio service",
-  "keywords": ["metalio", "music", "player", "mp3", "ogg", "vorbis", "eink4"],
+  "keywords": [
+    "metalio",
+    "music",
+    "player",
+    "mp3",
+    "ogg",
+    "vorbis",
+    "eink4"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Zenkjt/crossmux-metalio"
   },
   "license": "BSD-3-Clause",
-  "frameworks": ["arduino"],
-  "platforms": ["espressif32"],
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
   "dependencies": {
     "tanakamasayuki/PCMFlow": "https://github.com/tanakamasayuki/PCMFlow.git#f6a41dd914842ca5c3c20ff38fca9f7028257fb6",
-    "nothings/stb": "https://github.com/nothings/stb.git#master"
+    "nothings/stb": "https://github.com/nothings/stb.git#2c980bb598"
+  },
+  "build": {
+    "srcDir": ".",
+    "includeDir": ".",
+    "srcFilter": [
+      "+<stb_vorbis.c>"
+    ]
   }
 }
