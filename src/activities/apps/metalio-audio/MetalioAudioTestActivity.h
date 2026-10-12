@@ -10,9 +10,7 @@ class Bitmap;
 
 class MetalioAudioTestActivity final : public Activity {
  public:
-  MetalioAudioTestActivity(
-      GfxRenderer& renderer,
-      MappedInputManager& mappedInput)
+  MetalioAudioTestActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("MusicPlayer", renderer, mappedInput) {}
 
   ~MetalioAudioTestActivity() override = default;
@@ -38,20 +36,18 @@ class MetalioAudioTestActivity final : public Activity {
 
   void adjustVolume(int delta);
   void togglePlayPause();
+  void previousTrack();
+  void nextTrack();
   void requestRedraw();
 
   bool loadSkin();
   void drawSkin();
 
   bool skinLoaded_ = false;
-  bool playing_ = false;
   bool firstRender_ = true;
 
   uint8_t volume_ = 70;
 
   HalFile skinFile_;
   Bitmap* skinBitmap_ = nullptr;
-
-  const char* title_ = "Music Player";
-  const char* artist_ = "Select music from /music";
 };
