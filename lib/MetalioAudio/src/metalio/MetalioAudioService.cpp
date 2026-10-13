@@ -76,7 +76,7 @@ enum class EncodeTarget : uint8_t {
 };
 
 struct PlaybackRequest {
-  std::vector<int16_t> pcm;
+  metalio_memory::PsramVector<int16_t> pcm;
 
   bool done = false;
   bool success = false;
