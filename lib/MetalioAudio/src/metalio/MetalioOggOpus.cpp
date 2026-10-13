@@ -17,9 +17,12 @@
 
 #include "MetalioAudioService.h"
 #include "MetalioOpusCodec.h"
+#include "MetalioPsramBuffer.h"
 
 namespace metalio_ogg_opus {
 namespace {
+
+using metalio_memory::PsramVector;
 
 constexpr char kRecordingDir[] = "/sdcard/metalio/e-ink/recordings";
 constexpr uint32_t kOggSerial = 0x4d45544c;  // "METL"
@@ -64,7 +67,7 @@ bool writeOggPage(FILE* file, uint8_t headerType, uint64_t granule,
   const std::size_t segmentCount = dataSegmentCount + (needsTerminator ? 1 : 0);
   if (segmentCount == 0 || segmentCount > 255) return false;
 
-  std::vector<uint8_t> page(27 + segmentCount + packetBytes, 0);
+  PsramVector<uint8_t> page(27 + segmentCount + packetBytes, 0);
   std::memcpy(page.data(), "OggS", 4);
   page[4] = 0;
   page[5] = headerType;
@@ -184,12 +187,15 @@ bool recordFile(const char* path, uint32_t durationMs) {
         pcm.resize(metalio_opus::kFrameSamples, 0);
       }
 
-      std::vector<uint8_t> packet;
+      std::vector<uint8_t> encodedPacket;
       if (!metalio_audio_service::encodePcmFrame(
-              pcm.data(), metalio_opus::kFrameSamples, packet)) {
+              pcm.data(), metalio_opus::kFrameSamples, encodedPacket)) {
         ok = false;
         break;
       }
+
+      PsramVector<uint8_t> packet;
+      packet.assign(encodedPacket.begin(), encodedPacket.end());
 
       // Ogg Opus granule positions are expressed in the Opus 48 kHz
       // reference clock, regardless of the encoder's 16 kHz output rate.
@@ -227,7 +233,8 @@ bool playFile(const char* path) {
   bool seenHead = false;
   bool seenTags = false;
   bool ok = true;
-  std::vector<uint8_t> partialPacket;
+  PsramVector<uint8_t> partialPacket;
+  partialPacket.reserve(metalio_opus::kMaxPacketBytes);
 
   for (;;) {
     std::array<uint8_t, 27> header{};
@@ -239,22 +246,22 @@ bool playFile(const char* path) {
 
     const uint8_t headerType = header[5];
     const std::size_t segmentCount = header[26];
-    std::vector<uint8_t> lacing(segmentCount);
+    std::array<uint8_t, 255> lacing{};
     if (segmentCount && !readExact(file, lacing.data(), segmentCount)) {
       ok = false;
       break;
     }
 
     std::size_t bodyBytes = 0;
-    for (uint8_t n : lacing) bodyBytes += n;
-    std::vector<uint8_t> body(bodyBytes);
+    for (std::size_t i = 0; i < segmentCount; ++i) bodyBytes += lacing[i];
+    PsramVector<uint8_t> body(bodyBytes);
     if (bodyBytes && !readExact(file, body.data(), bodyBytes)) {
       ok = false;
       break;
     }
 
     std::size_t offset = 0;
-    for (std::size_t i = 0; i < lacing.size(); ++i) {
+    for (std::size_t i = 0; i < segmentCount; ++i) {
       const std::size_t len = lacing[i];
       if (offset + len > body.size()) {
         ok = false;
@@ -268,13 +275,11 @@ bool playFile(const char* path) {
 
       if (len == 255) continue;
 
-      const std::vector<uint8_t> packet = std::move(partialPacket);
-      partialPacket.clear();
-
       if (!seenHead) {
-        if (packet.size() >= 19 &&
-            std::memcmp(packet.data(), "OpusHead", 8) == 0) {
+        if (partialPacket.size() >= 19 &&
+            std::memcmp(partialPacket.data(), "OpusHead", 8) == 0) {
           seenHead = true;
+          partialPacket.clear();
           continue;
         }
         ok = false;
@@ -282,18 +287,19 @@ bool playFile(const char* path) {
       }
 
       if (!seenTags) {
-        if (packet.size() >= 8 &&
-            std::memcmp(packet.data(), "OpusTags", 8) == 0) {
+        if (partialPacket.size() >= 8 &&
+            std::memcmp(partialPacket.data(), "OpusTags", 8) == 0) {
           seenTags = true;
+          partialPacket.clear();
           continue;
         }
         // Be liberal with files that omit OpusTags.
         seenTags = true;
       }
 
-      std::vector<int16_t> pcm;
+      PsramVector<int16_t> pcm;
       if (!metalio_audio_service::decodeOpusPacket(
-              packet.data(), packet.size(), pcm)) {
+              partialPacket.data(), partialPacket.size(), pcm)) {
         ok = false;
         break;
       }
@@ -305,6 +311,7 @@ bool playFile(const char* path) {
         }
       }
       if (!ok) break;
+      partialPacket.clear();
     }
 
     if (!ok) break;

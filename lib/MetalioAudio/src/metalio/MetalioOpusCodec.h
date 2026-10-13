@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "MetalioPsramBuffer.h"
+
 namespace metalio_opus {
 
 constexpr int kSampleRate = 16000;
@@ -23,6 +25,8 @@ class Encoder {
 
   bool encode(const int16_t* pcm, std::size_t samples,
               std::vector<uint8_t>& packet);
+  bool encode(const int16_t* pcm, std::size_t samples,
+              metalio_memory::PsramVector<uint8_t>& packet);
   void reset();
   void setComplexity(int complexity);
   void setDtx(bool enabled);
@@ -41,6 +45,8 @@ class Decoder {
 
   bool decode(const uint8_t* packet, std::size_t packetBytes,
               std::vector<int16_t>& pcm);
+  bool decode(const uint8_t* packet, std::size_t packetBytes,
+              metalio_memory::PsramVector<int16_t>& pcm);
   void reset();
 
  private:

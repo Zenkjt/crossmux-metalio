@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <vector>
 
 namespace metalio_opus {
@@ -55,7 +56,29 @@ bool Encoder::encode(const int16_t* pcm, std::size_t samples,
     return false;
   }
 
-  packet.assign(encoded.begin(), encoded.begin() + bytes);
+  packet.resize(static_cast<std::size_t>(bytes));
+  std::memcpy(packet.data(), encoded.data(), static_cast<std::size_t>(bytes));
+  return true;
+}
+
+bool Encoder::encode(const int16_t* pcm, std::size_t samples,
+                     metalio_memory::PsramVector<uint8_t>& packet) {
+  packet.clear();
+  if (encoder_ == nullptr || pcm == nullptr || samples != kFrameSamples) {
+    return false;
+  }
+
+  std::array<uint8_t, kMaxPacketBytes> encoded{};
+  const int bytes = opus_encode(static_cast<OpusEncoder*>(encoder_), pcm,
+                                kFrameSamples, encoded.data(),
+                                static_cast<opus_int32>(encoded.size()));
+  if (bytes <= 0) {
+    LOG_ERR(kTag, "opus_encode failed: %d", bytes);
+    return false;
+  }
+
+  packet.resize(static_cast<std::size_t>(bytes));
+  std::memcpy(packet.data(), encoded.data(), static_cast<std::size_t>(bytes));
   return true;
 }
 
@@ -111,6 +134,37 @@ bool Decoder::decode(const uint8_t* packet, std::size_t packetBytes,
     return false;
   }
 
+  pcm.reserve(kMaxDecoderSamples);
+  pcm.resize(static_cast<std::size_t>(samplesPerChannel));
+  const int samples = opus_decode(
+      static_cast<OpusDecoder*>(decoder_), packet,
+      static_cast<opus_int32>(packetBytes), pcm.data(),
+      samplesPerChannel, 0);
+  if (samples <= 0) {
+    pcm.clear();
+    LOG_ERR(kTag, "opus_decode failed: %d", samples);
+    return false;
+  }
+
+  pcm.resize(static_cast<std::size_t>(samples));
+  return true;
+}
+
+bool Decoder::decode(const uint8_t* packet, std::size_t packetBytes,
+                     metalio_memory::PsramVector<int16_t>& pcm) {
+  pcm.clear();
+  if (decoder_ == nullptr || packet == nullptr || packetBytes == 0) {
+    return false;
+  }
+
+  int samplesPerChannel = opus_packet_get_nb_samples(
+      packet, static_cast<opus_int32>(packetBytes), kSampleRate);
+  if (samplesPerChannel <= 0 || samplesPerChannel > kMaxDecoderSamples) {
+    LOG_ERR(kTag, "invalid Opus packet duration: %d", samplesPerChannel);
+    return false;
+  }
+
+  pcm.reserve(kMaxDecoderSamples);
   pcm.resize(static_cast<std::size_t>(samplesPerChannel));
   const int samples = opus_decode(
       static_cast<OpusDecoder*>(decoder_), packet,
@@ -144,12 +198,20 @@ bool Encoder::encode(const int16_t*, std::size_t, std::vector<uint8_t>& packet) 
   packet.clear();
   return false;
 }
+bool Encoder::encode(const int16_t*, std::size_t, metalio_memory::PsramVector<uint8_t>& packet) {
+  packet.clear();
+  return false;
+}
 void Encoder::reset() {}
 void Encoder::setComplexity(int) {}
 void Encoder::setDtx(bool) {}
 Decoder::Decoder() = default;
 Decoder::~Decoder() = default;
 bool Decoder::decode(const uint8_t*, std::size_t, std::vector<int16_t>& pcm) {
+  pcm.clear();
+  return false;
+}
+bool Decoder::decode(const uint8_t*, std::size_t, metalio_memory::PsramVector<int16_t>& pcm) {
   pcm.clear();
   return false;
 }
