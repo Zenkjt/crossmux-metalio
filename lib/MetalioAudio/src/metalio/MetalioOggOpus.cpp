@@ -297,7 +297,7 @@ bool playFile(const char* path) {
         seenTags = true;
       }
 
-      PsramVector<int16_t> pcm;
+      std::vector<int16_t> pcm;
       if (!metalio_audio_service::decodeOpusPacket(
               partialPacket.data(), partialPacket.size(), pcm)) {
         ok = false;

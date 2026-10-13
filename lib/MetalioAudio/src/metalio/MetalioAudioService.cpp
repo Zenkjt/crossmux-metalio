@@ -1247,9 +1247,8 @@ bool readCapturedPcm(
     return false;
   }
 
-  samples =
-      std::move(
-          captureQueue.front().samples);
+  const auto& queuedSamples = captureQueue.front().samples;
+  samples.assign(queuedSamples.begin(), queuedSamples.end());
 
   captureQueue.pop_front();
 

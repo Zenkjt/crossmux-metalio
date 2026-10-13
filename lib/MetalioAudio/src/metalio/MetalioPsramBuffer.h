@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
-#include <new>
+#include <cstdlib>
 #include <vector>
 
 namespace metalio_memory {
@@ -26,12 +26,12 @@ class PsramAllocator {
   PsramAllocator(const PsramAllocator<U>&) noexcept {}
 
   [[nodiscard]] T* allocate(size_type count) {
-    if (count > max_size()) throw std::bad_alloc();
+    if (count > max_size()) std::abort();
 
     void* ptr = heap_caps_malloc(
         count * sizeof(T),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (ptr == nullptr) throw std::bad_alloc();
+    if (ptr == nullptr) std::abort();
     return static_cast<T*>(ptr);
   }
 
