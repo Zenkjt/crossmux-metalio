@@ -320,7 +320,7 @@ class OggVorbisSource {
     eof_ = true;
   }
 
-  bool readFrames(std::vector<int16_t>& out, std::size_t maxFrames) {
+  bool readFrames(MetalioPsramVector<int16_t>& out, std::size_t maxFrames) {
     out.clear();
     if (decoder_ == nullptr || maxFrames == 0 || eof_) return false;
 
@@ -348,8 +348,8 @@ class OggVorbisSource {
           decoder_,
           2,
           decoded_.data(),
-          static_cast<int>(decoded.size()));
-
+          static_cast<int>(decoded_.size()));
+      
       if (frames <= 0) {
         eof_ = true;
         break;
