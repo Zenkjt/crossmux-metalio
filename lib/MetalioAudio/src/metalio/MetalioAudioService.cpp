@@ -588,8 +588,9 @@ void opusTask(void*) {
             std::make_shared<
                 PlaybackRequest>();
 
-        request->pcm =
-            std::move(pcm);
+        request->pcm.assign(
+            pcm.begin(),
+            pcm.end());
 
         {
           std::lock_guard<std::mutex> lock(
