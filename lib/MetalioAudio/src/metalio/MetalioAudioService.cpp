@@ -19,9 +19,9 @@
 #include <utility>
 #include <vector>
 
+#include "MetalioPsramBuffer.h"
 #include "MetalioAudioCodec.h"
 #include "MetalioOpusCodec.h"
-#include "MetalioPsramBuffer.h"
 
 // Zao-style Layer-2 pipeline, adapted to CrossMux/Metalio:
 //   Metalio mic -> input task -> PCM capture/encode queue -> Opus task -> send queue
@@ -42,15 +42,11 @@
 namespace metalio_audio_service {
 namespace {
 
-using metalio_memory::PsramVector;
-
 constexpr std::size_t kMaxPlaybackQueue = 4;
 constexpr std::size_t kMaxEncodeQueue = 4;
 constexpr std::size_t kMaxDecodeQueue = 32;
 constexpr std::size_t kMaxSendQueue = 32;
 constexpr std::size_t kMaxCaptureFrames = 4;
-constexpr std::size_t kMaxPcmSamplesPerRequest = 8192;
-constexpr std::size_t kMaxOpusPacketBytes = metalio_opus::kMaxPacketBytes;
 constexpr std::size_t kFrameSamples =
     metalio_opus::kFrameSamples;
 
@@ -80,7 +76,7 @@ enum class EncodeTarget : uint8_t {
 };
 
 struct PlaybackRequest {
-  PsramVector<int16_t> pcm;
+  metalio_psram::Vector<int16_t> pcm;
 
   bool done = false;
   bool success = false;
@@ -91,12 +87,12 @@ struct PlaybackRequest {
 };
 
 struct EncodeRequest {
-  PsramVector<int16_t> pcm;
+  std::vector<int16_t> pcm;
 
   EncodeTarget target =
       EncodeTarget::SendQueue;
 
-  PsramVector<uint8_t> packet;
+  std::vector<uint8_t> packet;
 
   bool done = false;
   bool success = false;
@@ -106,11 +102,11 @@ struct EncodeRequest {
 };
 
 struct DecodeRequest {
-  PsramVector<uint8_t> packet;
+  std::vector<uint8_t> packet;
 };
 
 struct CaptureFrame {
-  PsramVector<int16_t> samples;
+  std::vector<int16_t> samples;
 };
 
 MetalioAudioCodec outputCodec;
@@ -137,7 +133,7 @@ std::deque<
 std::deque<DecodeRequest>
     decodeQueue;
 
-std::deque<PsramVector<uint8_t>>
+std::deque<std::vector<uint8_t>>
     sendQueue;
 
 std::deque<CaptureFrame>
@@ -305,8 +301,8 @@ void inputTask(void*) {
         }
       }
 
-      PsramVector<int16_t> pcm;
-      pcm.resize(kFrameSamples);
+      std::vector<int16_t> pcm(
+          kFrameSamples);
 
       std::size_t offset = 0;
 
@@ -572,8 +568,7 @@ void opusTask(void*) {
     }
 
     if (doDecode) {
-      PsramVector<int16_t> pcm;
-      pcm.reserve(metalio_opus::kMaxDecoderSamples);
+      std::vector<int16_t> pcm;
 
       bool ok = false;
 
@@ -627,8 +622,7 @@ void opusTask(void*) {
     }
 
     if (doEncode) {
-      PsramVector<uint8_t> packet;
-      packet.reserve(kMaxOpusPacketBytes);
+      std::vector<uint8_t> packet;
 
       bool ok = false;
 
@@ -1043,10 +1037,6 @@ bool queuePcm(
       std::make_shared<
           PlaybackRequest>();
 
-  if (count > kMaxPcmSamplesPerRequest) return false;
-
-  request->pcm.reserve(kMaxPcmSamplesPerRequest);
-  request->pcm.reserve(kFrameSamples);
   request->pcm.assign(
       samples,
       samples + count);
@@ -1084,9 +1074,6 @@ bool playPcm(
       std::make_shared<
           PlaybackRequest>();
 
-  if (count > kMaxPcmSamplesPerRequest) return false;
-
-  request->pcm.reserve(kMaxPcmSamplesPerRequest);
   request->pcm.assign(
       samples,
       samples + count);
@@ -1247,8 +1234,9 @@ bool readCapturedPcm(
     return false;
   }
 
-  const auto& queuedSamples = captureQueue.front().samples;
-  samples.assign(queuedSamples.begin(), queuedSamples.end());
+  samples =
+      std::move(
+          captureQueue.front().samples);
 
   captureQueue.pop_front();
 
@@ -1372,9 +1360,8 @@ bool encodePcmFrame(
     return false;
   }
 
-  packet.assign(
-      request->packet.begin(),
-      request->packet.end());
+  packet =
+      std::move(request->packet);
 
   return true;
 }
@@ -1431,14 +1418,11 @@ bool pushOpusPacket(
     return false;
   }
 
-  if (packetBytes > kMaxOpusPacketBytes) return false;
-
-  PsramVector<uint8_t> payload;
-  payload.reserve(kMaxOpusPacketBytes);
-  payload.assign(packet, packet + packetBytes);
-
   decodeQueue.push_back(
-      DecodeRequest{std::move(payload)});
+      DecodeRequest{
+          std::vector<uint8_t>(
+              packet,
+              packet + packetBytes)});
 
   lock.unlock();
 
@@ -1458,9 +1442,9 @@ bool popEncodedPacket(
     return false;
   }
 
-  packet.assign(
-      sendQueue.front().begin(),
-      sendQueue.front().end());
+  packet =
+      std::move(
+          sendQueue.front());
 
   sendQueue.pop_front();
 

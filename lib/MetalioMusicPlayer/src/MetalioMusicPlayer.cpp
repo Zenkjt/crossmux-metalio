@@ -21,6 +21,8 @@
 
 #include <PCMFlow.h>
 
+#include "MetalioPsramBuffer.h"
+
 #define STB_VORBIS_NO_STDIO
 #define STB_VORBIS_HEADER_ONLY
 #include <stb_vorbis.c>
@@ -28,12 +30,9 @@
 #include <HalStorage.h>
 
 #include "MetalioAudioService.h"
-#include "MetalioPsramBuffer.h"
 
 namespace metalio_music_player {
 namespace {
-
-using metalio_memory::PsramVector;
 
 constexpr char kMusicDir[] = "/music";
 constexpr std::size_t kMaxTracks = 200;
@@ -262,10 +261,11 @@ class OggVorbisSource {
         heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     dataInPsram_ = data_ != nullptr;
     if (data_ == nullptr) {
-      data_ = static_cast<unsigned char*>(malloc(size));
-      dataInPsram_ = false;
+      Serial.printf(
+          "[METALIO-MUSIC] OGG PSRAM allocation failed: %u bytes\\n",
+          static_cast<unsigned>(size));
+      return false;
     }
-    if (data_ == nullptr) return false;
 
     if (!file_.seek(0) ||
         file_.read(data_, size) != static_cast<int>(size)) {
@@ -294,8 +294,6 @@ class OggVorbisSource {
     durationMs_ = static_cast<uint32_t>(
         (static_cast<uint64_t>(totalFrames) * 1000ULL) / sourceRate_);
 
-    pending_.clear();
-    pending_.reserve(8192);
     eof_ = false;
     return true;
   }
@@ -323,13 +321,14 @@ class OggVorbisSource {
     eof_ = true;
   }
 
-  bool readFrames(PsramVector<int16_t>& out, std::size_t maxFrames) {
+  bool readFrames(metalio_psram::Vector<int16_t>& out, std::size_t maxFrames) {
     out.clear();
     if (decoder_ == nullptr || maxFrames == 0 || eof_) return false;
 
-    constexpr int kDecodeFrames = 4096;
-    PsramVector<int16_t> decoded;
-    decoded.resize(kDecodeFrames * 2);
+    constexpr std::size_t kDecodeFrames = 4096;
+    if (decoded_.size() != kDecodeFrames * 2) {
+      decoded_.resize(kDecodeFrames * 2);
+    }
 
     while (out.size() < maxFrames && !eof_) {
       if (pendingOffset_ < pending_.size()) {
@@ -399,7 +398,8 @@ class OggVorbisSource {
   unsigned char* data_ = nullptr;
   bool dataInPsram_ = false;
   stb_vorbis* decoder_ = nullptr;
-  PsramVector<int16_t> pending_;
+  metalio_psram::Vector<int16_t> pending_;
+  metalio_psram::Vector<int16_t> decoded_;
   std::size_t pendingOffset_ = 0;
   uint32_t sourceRate_ = 0;
   int sourceChannels_ = 0;
@@ -499,7 +499,7 @@ void playbackTask(void* arg) {
       flow.setBufferFrames(8192);
       flow.setInput(stream, PCMFlow::CodecKind::Auto);
 
-      std::array<int16_t, kDecodeFrames> pcm{};
+      metalio_psram::Vector<int16_t> pcm(kDecodeFrames);
 
       for (;;) {
         {
@@ -573,7 +573,7 @@ void playbackTask(void* arg) {
         if (index < impl->tracks.size()) impl->tracks[index].durationMs = source.durationMs();
       }
 
-      PsramVector<int16_t> pcm;
+      metalio_psram::Vector<int16_t> pcm;
       pcm.reserve(kDecodeFrames);
 
       while (!source.eof()) {
