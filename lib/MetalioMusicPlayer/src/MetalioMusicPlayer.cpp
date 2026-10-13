@@ -28,9 +28,12 @@
 #include <HalStorage.h>
 
 #include "MetalioAudioService.h"
+#include "MetalioPsramBuffer.h"
 
 namespace metalio_music_player {
 namespace {
+
+using metalio_memory::PsramVector;
 
 constexpr char kMusicDir[] = "/music";
 constexpr std::size_t kMaxTracks = 200;
@@ -291,6 +294,8 @@ class OggVorbisSource {
     durationMs_ = static_cast<uint32_t>(
         (static_cast<uint64_t>(totalFrames) * 1000ULL) / sourceRate_);
 
+    pending_.clear();
+    pending_.reserve(8192);
     eof_ = false;
     return true;
   }
@@ -318,12 +323,13 @@ class OggVorbisSource {
     eof_ = true;
   }
 
-  bool readFrames(std::vector<int16_t>& out, std::size_t maxFrames) {
+  bool readFrames(PsramVector<int16_t>& out, std::size_t maxFrames) {
     out.clear();
     if (decoder_ == nullptr || maxFrames == 0 || eof_) return false;
 
     constexpr int kDecodeFrames = 4096;
-    std::array<int16_t, kDecodeFrames * 2> decoded{};
+    PsramVector<int16_t> decoded;
+    decoded.resize(kDecodeFrames * 2);
 
     while (out.size() < maxFrames && !eof_) {
       if (pendingOffset_ < pending_.size()) {
@@ -393,7 +399,7 @@ class OggVorbisSource {
   unsigned char* data_ = nullptr;
   bool dataInPsram_ = false;
   stb_vorbis* decoder_ = nullptr;
-  std::vector<int16_t> pending_;
+  PsramVector<int16_t> pending_;
   std::size_t pendingOffset_ = 0;
   uint32_t sourceRate_ = 0;
   int sourceChannels_ = 0;
@@ -567,7 +573,7 @@ void playbackTask(void* arg) {
         if (index < impl->tracks.size()) impl->tracks[index].durationMs = source.durationMs();
       }
 
-      std::vector<int16_t> pcm;
+      PsramVector<int16_t> pcm;
       pcm.reserve(kDecodeFrames);
 
       while (!source.eof()) {
