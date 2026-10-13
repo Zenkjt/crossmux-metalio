@@ -20,8 +20,7 @@
 #include <utility>
 
 #include <PCMFlow.h>
-
-#include "MetalioPsramBuffer.h"
+#include "../../MetalioAudio/src/metalio/MetalioPsramBuffer.h"
 
 #define STB_VORBIS_NO_STDIO
 #define STB_VORBIS_HEADER_ONLY
@@ -262,7 +261,7 @@ class OggVorbisSource {
     dataInPsram_ = data_ != nullptr;
     if (data_ == nullptr) {
       Serial.printf(
-          "[METALIO-MUSIC] OGG PSRAM allocation failed: %u bytes\\n",
+          "[METALIO-MUSIC] OGG PSRAM allocation failed: %u bytes\n",
           static_cast<unsigned>(size));
       return false;
     }
@@ -321,7 +320,7 @@ class OggVorbisSource {
     eof_ = true;
   }
 
-  bool readFrames(metalio_psram::Vector<int16_t>& out, std::size_t maxFrames) {
+  bool readFrames(std::vector<int16_t>& out, std::size_t maxFrames) {
     out.clear();
     if (decoder_ == nullptr || maxFrames == 0 || eof_) return false;
 
@@ -348,7 +347,7 @@ class OggVorbisSource {
       const int frames = stb_vorbis_get_samples_short_interleaved(
           decoder_,
           2,
-          decoded.data(),
+          decoded_.data(),
           static_cast<int>(decoded.size()));
 
       if (frames <= 0) {
@@ -398,13 +397,13 @@ class OggVorbisSource {
   unsigned char* data_ = nullptr;
   bool dataInPsram_ = false;
   stb_vorbis* decoder_ = nullptr;
-  metalio_psram::Vector<int16_t> pending_;
-  metalio_psram::Vector<int16_t> decoded_;
+  MetalioPsramVector<int16_t> pending_;
   std::size_t pendingOffset_ = 0;
   uint32_t sourceRate_ = 0;
   int sourceChannels_ = 0;
   uint32_t durationMs_ = 0;
   bool eof_ = true;
+  MetalioPsramVector<int16_t> decoded_;
 };
 }  // namespace
 
@@ -499,7 +498,7 @@ void playbackTask(void* arg) {
       flow.setBufferFrames(8192);
       flow.setInput(stream, PCMFlow::CodecKind::Auto);
 
-      metalio_psram::Vector<int16_t> pcm(kDecodeFrames);
+      MetalioPsramVector<int16_t> pcm(kDecodeFrames);
 
       for (;;) {
         {
@@ -573,7 +572,7 @@ void playbackTask(void* arg) {
         if (index < impl->tracks.size()) impl->tracks[index].durationMs = source.durationMs();
       }
 
-      metalio_psram::Vector<int16_t> pcm;
+      MetalioPsramVector<int16_t> pcm;
       pcm.reserve(kDecodeFrames);
 
       while (!source.eof()) {

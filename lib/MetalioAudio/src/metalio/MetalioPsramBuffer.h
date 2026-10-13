@@ -3,54 +3,54 @@
 #include <esp_heap_caps.h>
 
 #include <cstddef>
-#include <limits>
-#include <memory>
 #include <cstdlib>
 #include <vector>
 
-namespace metalio_memory {
-
-// std::vector-compatible allocator for bulk audio payloads. Queue/control
-// objects stay in normal heap/internal RAM; only the vector payload is placed
-// in octal PSRAM.
 template <typename T>
-class PsramAllocator {
+class MetalioPsramAllocator {
  public:
   using value_type = T;
-  using size_type = std::size_t;
-  using difference_type = std::ptrdiff_t;
 
-  PsramAllocator() noexcept = default;
+  MetalioPsramAllocator() noexcept = default;
 
   template <typename U>
-  PsramAllocator(const PsramAllocator<U>&) noexcept {}
+  MetalioPsramAllocator(const MetalioPsramAllocator<U>&) noexcept {}
 
-  [[nodiscard]] T* allocate(size_type count) {
-    if (count > max_size()) std::abort();
+  T* allocate(std::size_t count) {
+    if (count == 0) return nullptr;
 
     void* ptr = heap_caps_malloc(
         count * sizeof(T),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (ptr == nullptr) std::abort();
+    if (ptr == nullptr) {
+      std::abort();
+    }
     return static_cast<T*>(ptr);
   }
 
-  void deallocate(T* ptr, size_type) noexcept {
-    heap_caps_free(ptr);
-  }
-
-  constexpr size_type max_size() const noexcept {
-    return std::numeric_limits<size_type>::max() / sizeof(T);
+  void deallocate(T* ptr, std::size_t) noexcept {
+    if (ptr != nullptr) {
+      heap_caps_free(ptr);
+    }
   }
 
   template <typename U>
-  bool operator==(const PsramAllocator<U>&) const noexcept { return true; }
-
-  template <typename U>
-  bool operator!=(const PsramAllocator<U>&) const noexcept { return false; }
+  struct rebind {
+    using other = MetalioPsramAllocator<U>;
+  };
 };
 
-template <typename T>
-using PsramVector = std::vector<T, PsramAllocator<T>>;
+template <typename T, typename U>
+bool operator==(const MetalioPsramAllocator<T>&,
+                const MetalioPsramAllocator<U>&) noexcept {
+  return true;
+}
 
-}  // namespace metalio_memory
+template <typename T, typename U>
+bool operator!=(const MetalioPsramAllocator<T>&,
+                const MetalioPsramAllocator<U>&) noexcept {
+  return false;
+}
+
+template <typename T>
+using MetalioPsramVector = std::vector<T, MetalioPsramAllocator<T>>;
