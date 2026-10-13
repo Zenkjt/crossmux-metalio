@@ -367,10 +367,10 @@ class OggVorbisSource {
         const double frac = sourcePosition - index0;
         const int index1 = std::min(index0 + 1, frames - 1);
 
-        const int16_t left0 = decoded[index0 * 2];
-        const int16_t right0 = channels > 1 ? decoded[index0 * 2 + 1] : left0;
-        const int16_t left1 = decoded[index1 * 2];
-        const int16_t right1 = channels > 1 ? decoded[index1 * 2 + 1] : left1;
+        const int16_t left0 = decoded_[index0 * 2];
+        const int16_t right0 = channels > 1 ? decoded_[index0 * 2 + 1] : left0;
+        const int16_t left1 = decoded_[index1 * 2];
+        const int16_t right1 = channels > 1 ? decoded_[index1 * 2 + 1] : left1;
 
         const int32_t mono0 =
             (static_cast<int32_t>(left0) + static_cast<int32_t>(right0)) / 2;
