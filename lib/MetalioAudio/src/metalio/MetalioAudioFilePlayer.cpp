@@ -19,6 +19,7 @@
 
 #include <HalStorage.h>
 #include "MetalioAudioService.h"
+#include <Logging.h>
 
 namespace metalio_audio_file_player {
 namespace {
