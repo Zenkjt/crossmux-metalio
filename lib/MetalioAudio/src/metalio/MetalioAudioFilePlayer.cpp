@@ -2,6 +2,7 @@
 
 #if FREEINK_DEVICE_METALIO_EINK4
 
+#include <Logging.h>
 #include <esp_heap_caps.h>
 #include <esp_attr.h>
 #include <freertos/FreeRTOS.h>
