@@ -7,7 +7,7 @@
 #include <cstring>
 #include <vector>
 
-#include "MetalioAudioFilePlayer.h"
+#include "metalio/MetalioAudioFilePlayer.h"
 #include "MetalioAudioService.h"
 
 namespace fui = freeink::ui;
