@@ -43,6 +43,7 @@ class MetalioAudioTestActivity final : public UiListActivity {
   void rebuildRows();
   void setStatus(const char* text);
 
+  bool runWavStreamTest();
   bool runMicTest();
   bool runOpusLoopbackTest();
 

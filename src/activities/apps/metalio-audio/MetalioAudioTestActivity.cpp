@@ -7,6 +7,7 @@
 #include <cstring>
 #include <vector>
 
+#include "MetalioAudioFilePlayer.h"
 #include "MetalioAudioService.h"
 
 namespace fui = freeink::ui;
@@ -15,9 +16,9 @@ namespace {
 
 constexpr const char* TAG = "MTAUD";
 constexpr uint32_t kSampleRate = 16000;
-constexpr std::size_t kToneSamples = 6400;  // 400 ms
-constexpr float kToneFrequencyHz = 1000.0f;
-constexpr float kPi = 3.14159265358979323846f;
+constexpr char kWavPath[] = "/music/test0.wav";
+
+metalio_audio_file_player::Player gWavPlayer;
 
 }  // namespace
 
@@ -34,13 +35,14 @@ void MetalioAudioTestActivity::onEnter() {
 }
 
 void MetalioAudioTestActivity::onExit() {
+  gWavPlayer.stop();
   metalio_audio_service::stop();
   UiListActivity::onExit();
 }
 
 void MetalioAudioTestActivity::rebuildRows() {
   rows[kSpeakerTest] = fui::ListItem{};
-  rows[kSpeakerTest].label = "Speaker test";
+  rows[kSpeakerTest].label = "WAV streaming test";
   rows[kSpeakerTest].actionValue = kSpeakerTest;
 
   rows[kMicTest] = fui::ListItem{};
@@ -103,32 +105,30 @@ void MetalioAudioTestActivity::activateIndex(int index) {
 
   switch (index) {
     case kSpeakerTest: {
-      setStatus("Playing 1 kHz tone...");
+      setStatus("Streaming /music/test0.wav...");
 
-      std::vector<int16_t> tone(kToneSamples);
-
-      for (std::size_t i = 0; i < tone.size(); ++i) {
-        const float phase =
-            2.0f * kPi * kToneFrequencyHz *
-            static_cast<float>(i) /
-            static_cast<float>(kSampleRate);
-
-        tone[i] = static_cast<int16_t>(
-            std::sin(phase) * 12000.0f);
+      const bool started = gWavPlayer.playWav(kWavPath);
+      if (!started) {
+        LOG_ERR(
+            TAG,
+            "WAV start failed: %s",
+            gWavPlayer.lastError());
+        setStatus("WAV stream START FAIL");
+        break;
       }
 
-      const bool ok =
-          metalio_audio_service::playPcm(
-              tone.data(), tone.size(), 3000) &&
-          metalio_audio_service::waitPlaybackDrained(3000);
+      const bool ok = gWavPlayer.wait(120000);
 
-      setStatus(ok ? "Speaker test PASS"
-                   : "Speaker test FAIL");
+      if (ok) {
+        setStatus("WAV stream PASS");
+      } else {
+        LOG_ERR(
+            TAG,
+            "WAV stream failed: %s",
+            gWavPlayer.lastError());
+        setStatus("WAV stream FAIL");
+      }
 
-      LOG_INF(
-          TAG,
-          "Speaker test: %s",
-          ok ? "PASS" : "FAIL");
       break;
     }
 
@@ -159,6 +159,18 @@ void MetalioAudioTestActivity::activateIndex(int index) {
     default:
       break;
   }
+}
+
+bool MetalioAudioTestActivity::runWavStreamTest() {
+  if (!gWavPlayer.playWav(kWavPath)) {
+    LOG_ERR(
+        TAG,
+        "WAV stream start failed: %s",
+        gWavPlayer.lastError());
+    return false;
+  }
+
+  return gWavPlayer.wait(120000);
 }
 
 bool MetalioAudioTestActivity::runMicTest() {
