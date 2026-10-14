@@ -2,7 +2,6 @@
 
 #if FREEINK_DEVICE_METALIO_EINK4
 
-#include <Logging.h>
 #include <esp_heap_caps.h>
 #include <esp_attr.h>
 #include <freertos/FreeRTOS.h>
@@ -288,9 +287,16 @@ struct Player::Impl {
                 samplesInBuffer,
                 kQueueChunkSamples);
 
-        if (!metalio_audio_service::queuePcm(pcm, chunk)) {
-          vTaskDelay(pdMS_TO_TICKS(kQueueRetryMs));
-          continue;
+        if (!metalio_audio_service::playPcm(pcm, chunk, 2000)) {
+          setError("Audio output failed");
+          LOG_ERR(
+              kTag,
+              "WAV stream aborted: audio output failed at sample=%u",
+              static_cast<unsigned>(totalSamples));
+          metalio_audio_service::flushPlayback();
+          metalio_audio_service::stop();
+          finish(false);
+          return;
         }
 
         pcm += chunk;
@@ -303,6 +309,9 @@ struct Player::Impl {
 
     if (!metalio_audio_service::waitPlaybackDrained(15000)) {
       setError("Audio output drain failed");
+      LOG_ERR(kTag, "WAV stream aborted: playback drain failed");
+      metalio_audio_service::flushPlayback();
+      metalio_audio_service::stop();
       finish(false);
       return;
     }
