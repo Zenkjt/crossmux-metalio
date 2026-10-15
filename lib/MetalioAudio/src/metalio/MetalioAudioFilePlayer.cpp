@@ -1,13 +1,10 @@
 #include "MetalioAudioFilePlayer.h"
-
 #if FREEINK_DEVICE_METALIO_EINK4
-
-#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/idf_additions.h>
+#include <freertos/queue.h>
 #include <freertos/task.h>
-
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -16,560 +13,77 @@
 #include <cstring>
 #include <mutex>
 #include <string>
-
 #include <HalStorage.h>
-#include "MetalioAudioService.h"
 #include <Logging.h>
-
+#include "MetalioAudioCodec.h"
+namespace metalio_audio_file_player { namespace {
+constexpr char kTag[]="METALIO-FILE";
+constexpr std::size_t kBufferBytes=32*1024,kBufferCount=2;
+constexpr uint32_t kTaskStackBytes=12*1024;
+constexpr UBaseType_t kReaderPriority=3,kOutputPriority=4;
+constexpr UBaseType_t kTaskCaps=MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
+struct WavInfo { uint16_t format=0,channels=0,bitsPerSample=0; uint32_t sampleRate=0; std::size_t dataOffset=0,dataBytes=0; };
+uint16_t le16(const uint8_t*p){return uint16_t(p[0]|(uint16_t(p[1])<<8));}
+uint32_t le32(const uint8_t*p){return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);}
+bool readExact(HalFile&f,void*d,std::size_t n){auto*p=static_cast<uint8_t*>(d);std::size_t done=0;while(done<n){int r=f.read(p+done,n-done);if(r<=0)return false;done+=std::size_t(r);}return true;}
+bool skip(HalFile&f,std::size_t n){auto p=f.position(),s=f.fileSize();return p<=s&&n<=s-p&&f.seek(p+n);}
+bool parseWav(HalFile&f,WavInfo&i){uint8_t h[12];if(!f.seek(0)||!readExact(f,h,12)||std::memcmp(h,"RIFF",4)||std::memcmp(h+8,"WAVE",4))return false;auto s=f.fileSize();bool fmt=false,data=false;while(f.position()+8<=s){uint8_t ch[8];if(!readExact(f,ch,8))return false;auto n=le32(ch+4),p=f.position();if(p>s||std::size_t(n)>s-p)return false;if(!std::memcmp(ch,"fmt ",4)){if(n<16)return false;uint8_t x[16];if(!readExact(f,x,16))return false;i.format=le16(x);i.channels=le16(x+2);i.sampleRate=le32(x+4);i.bitsPerSample=le16(x+14);fmt=true;if(n>16&&!skip(f,n-16))return false;}else if(!std::memcmp(ch,"data",4)){i.dataOffset=p;i.dataBytes=n;data=true;if(fmt)break;if(!skip(f,n))return false;}else if(!skip(f,n))return false;if(n&1u&&!skip(f,1))return false;}return fmt&&data&&i.format==1&&i.channels==1&&i.sampleRate==16000&&i.bitsPerSample==16&&(i.dataBytes%2)==0;}
+struct Block {uint8_t*data=nullptr;std::size_t samples=0;bool end=false;};
+}}
+using namespace metalio_audio_file_player;
 namespace metalio_audio_file_player {
-namespace {
-
-constexpr char kTag[] = "METALIO-FILE";
-
-// 32 KiB = 16384 mono 16-bit samples = 1.024 s at 16 kHz.
-constexpr std::size_t kFileBufferBytes = 32 * 1024;
-
-constexpr uint32_t kTaskStackBytes = 16 * 1024;
-constexpr UBaseType_t kTaskPriority = 3;
-constexpr UBaseType_t kTaskCaps =
-    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-
-uint16_t readLe16(const uint8_t* p) {
-  return static_cast<uint16_t>(
-      static_cast<uint16_t>(p[0]) |
-      (static_cast<uint16_t>(p[1]) << 8));
-}
-
-uint32_t readLe32(const uint8_t* p) {
-  return static_cast<uint32_t>(p[0]) |
-         (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) |
-         (static_cast<uint32_t>(p[3]) << 24);
-}
-
-bool readExact(
-    HalFile& file,
-    void* dst,
-    std::size_t bytes) {
-  uint8_t* out = static_cast<uint8_t*>(dst);
-  std::size_t done = 0;
-
-  while (done < bytes) {
-    const int n = file.read(out + done, bytes - done);
-
-    if (n <= 0) {
-      return false;
-    }
-
-    done += static_cast<std::size_t>(n);
-  }
-
-  return true;
-}
-
-bool skipBytes(HalFile& file, std::size_t bytes) {
-  return file.seek(file.position() + bytes);
-}
-
-struct WavInfo {
-  uint16_t format = 0;
-  uint16_t channels = 0;
-  uint32_t sampleRate = 0;
-  uint16_t bitsPerSample = 0;
-  std::size_t dataOffset = 0;
-  std::size_t dataBytes = 0;
-};
-
-bool parseWav(HalFile& file, WavInfo& info) {
-  uint8_t header[12];
-
-  if (!file.seek(0) ||
-      !readExact(file, header, sizeof(header))) {
-    return false;
-  }
-
-  if (std::memcmp(header, "RIFF", 4) != 0 ||
-      std::memcmp(header + 8, "WAVE", 4) != 0) {
-    return false;
-  }
-
-  bool haveFmt = false;
-  bool haveData = false;
-  const std::size_t fileSize = file.fileSize();
-
-  while (file.position() + 8 <= fileSize) {
-    uint8_t chunkHeader[8];
-
-    if (!readExact(file, chunkHeader, sizeof(chunkHeader))) {
-      return false;
-    }
-
-    const uint32_t chunkSize =
-        readLe32(chunkHeader + 4);
-
-    const std::size_t chunkData =
-        file.position();
-
-    if (std::memcmp(chunkHeader, "fmt ", 4) == 0) {
-      if (chunkSize < 16 ||
-          chunkData + 16 > fileSize) {
-        return false;
-      }
-
-      uint8_t fmt[16];
-
-      if (!readExact(file, fmt, sizeof(fmt))) {
-        return false;
-      }
-
-      info.format = readLe16(fmt);
-      info.channels = readLe16(fmt + 2);
-      info.sampleRate = readLe32(fmt + 4);
-      info.bitsPerSample = readLe16(fmt + 14);
-
-      haveFmt = true;
-
-      if (chunkSize > 16 &&
-          !skipBytes(
-              file,
-              static_cast<std::size_t>(chunkSize - 16))) {
-        return false;
-      }
-
-    } else if (std::memcmp(chunkHeader, "data", 4) == 0) {
-      if (chunkData + chunkSize > fileSize) {
-        return false;
-      }
-
-      info.dataOffset = chunkData;
-      info.dataBytes = chunkSize;
-      haveData = true;
-
-      if (haveFmt) {
-        break;
-      }
-
-      if (!skipBytes(file, chunkSize)) {
-        return false;
-      }
-
-    } else {
-      if (chunkData + chunkSize > fileSize ||
-          !skipBytes(file, chunkSize)) {
-        return false;
-      }
-    }
-
-    if (chunkSize & 1u) {
-      if (!skipBytes(file, 1)) {
-        return false;
-      }
-    }
-  }
-
-  if (!haveFmt || !haveData) {
-    return false;
-  }
-
-  return info.format == 1 &&
-         info.channels == 1 &&
-         info.sampleRate == 16000 &&
-         info.bitsPerSample == 16 &&
-         (info.dataBytes % sizeof(int16_t)) == 0;
-}
-
-}  // namespace
-
 struct Player::Impl {
-  std::mutex mutex;
-  std::condition_variable cv;
-
-  TaskHandle_t task = nullptr;
-
-  bool stopRequested = false;
-  bool running = false;
-  bool success = false;
-
-  char error[128] = "";
-
-  uint8_t* fileBuffer = nullptr;
-  std::string taskPath;
-
-  void setError(const char* text) {
-    std::strncpy(
-        error,
-        text != nullptr ? text : "Unknown error",
-        sizeof(error) - 1);
-
-    error[sizeof(error) - 1] = '\0';
+  std::mutex mutex; std::condition_variable cv;
+  TaskHandle_t readerTask=nullptr,outputTask=nullptr;
+  QueueHandle_t freeQ=nullptr,readyQ=nullptr;
+  uint8_t*buf[kBufferCount]={nullptr,nullptr};
+  bool stopRequested=false,running=false,success=false,failed=false;
+  char error[128]=""; std::string path; MetalioAudioCodec codec;
+  void err(const char*s){std::lock_guard<std::mutex>l(mutex);std::strncpy(error,s?s:"Unknown error",sizeof(error)-1);error[sizeof(error)-1]=0;}
+  bool stopped(){std::lock_guard<std::mutex>l(mutex);return stopRequested;}
+  static void rd(void*p){auto*self=static_cast<Impl*>(p);self->reader();{std::lock_guard<std::mutex>l(self->mutex);self->readerTask=nullptr;}self->cv.notify_all();vTaskDeleteWithCaps(nullptr);}
+  static void out(void*p){auto*self=static_cast<Impl*>(p);self->output();{std::lock_guard<std::mutex>l(self->mutex);self->outputTask=nullptr;}self->cv.notify_all();vTaskDeleteWithCaps(nullptr);}
+  void finish(bool ok){ {std::lock_guard<std::mutex>l(mutex);success=ok;running=false;}cv.notify_all(); }
+  void fail(const char*s){err(s);{std::lock_guard<std::mutex>l(mutex);failed=true;stopRequested=true;}Block b;b.end=true;if(readyQ)xQueueSend(readyQ,&b,0);}
+  void reader(){
+    HalFile f=Storage.open(path.c_str(),O_RDONLY);if(!f.isOpen()){fail("Cannot open audio file");return;}
+    WavInfo w;if(!parseWav(f,w)){fail("WAV must be PCM/mono/16k/16-bit");return;}
+    if(!f.seek(w.dataOffset)){fail("WAV data seek failed");return;}
+    LOG_INF(kTag,"WAV stream: path=%s size=%u data=%u rate=%u ch=%u bits=%u",path.c_str(),(unsigned)f.fileSize(),(unsigned)w.dataBytes,(unsigned)w.sampleRate,(unsigned)w.channels,(unsigned)w.bitsPerSample);
+    LOG_INF(kTag,"HiFi-DAP style double buffer: count=%u bytes=%u",(unsigned)kBufferCount,(unsigned)kBufferBytes);
+    std::size_t remain=w.dataBytes;
+    while(remain){if(stopped()){fail("Playback stopped");return;}Block b;if(xQueueReceive(freeQ,&b,pdMS_TO_TICKS(100))!=pdTRUE)continue;auto n=std::min(remain,kBufferBytes);int r=f.read(b.data,n);if(r<=0||(std::size_t(r)&1)){xQueueSend(freeQ,&b,portMAX_DELAY);fail("SD read failed");return;}b.samples=std::size_t(r)/2;b.end=false;if(xQueueSend(readyQ,&b,portMAX_DELAY)!=pdTRUE){xQueueSend(freeQ,&b,portMAX_DELAY);fail("Audio queue failed");return;}remain-=std::size_t(r);}
+    Block end;end.end=true;xQueueSend(readyQ,&end,portMAX_DELAY);
   }
-
-  static void taskEntry(void* arg) {
-    static_cast<Impl*>(arg)->run();
-    vTaskDeleteWithCaps(nullptr);
+  void output(){
+    if(!codec.startOutput()){fail("Audio output start failed");finish(false);return;}
+    bool ok=true;for(;;){Block b;if(xQueueReceive(readyQ,&b,pdMS_TO_TICKS(100))!=pdTRUE){if(stopped()){ok=false;break;}continue;}if(b.end)break;std::size_t off=0;while(off<b.samples){if(stopped()){ok=false;break;}auto n=codec.write(reinterpret_cast<const int16_t*>(b.data)+off,b.samples-off,1000);if(!n){ok=false;break;}off+=n;}xQueueSend(freeQ,&b,portMAX_DELAY);if(!ok)break;}
+    codec.stopOutput();bool wasFailed;{std::lock_guard<std::mutex>l(mutex);wasFailed=failed;}if(wasFailed)finish(false);else if(ok&&!stopped())finish(true);
   }
-
-  bool shouldStop() {
-    std::lock_guard<std::mutex> lock(mutex);
-    return stopRequested;
+  bool alloc(){freeQ=xQueueCreate(kBufferCount,sizeof(Block));readyQ=xQueueCreate(kBufferCount,sizeof(Block));if(!freeQ||!readyQ){err("Audio queue allocation failed");return false;}for(std::size_t i=0;i<kBufferCount;i++){buf[i]=static_cast<uint8_t*>(heap_caps_malloc(kBufferBytes,kTaskCaps));if(!buf[i]){err("PSRAM audio buffer allocation failed");return false;}Block b;b.data=buf[i];if(xQueueSend(freeQ,&b,0)!=pdTRUE){err("Audio free queue failed");return false;}}return true;}
+  void destroy(){if(readyQ){vQueueDelete(readyQ);readyQ=nullptr;}if(freeQ){vQueueDelete(freeQ);freeQ=nullptr;}for(auto&b:buf)if(b){heap_caps_free(b);b=nullptr;}}
+  bool tasks(){if(xTaskCreateWithCaps(rd,"metalio_wav_rd",kTaskStackBytes,this,kReaderPriority,&readerTask,kTaskCaps)!=pdPASS){readerTask=nullptr;err("WAV reader task creation failed");return false;}if(xTaskCreateWithCaps(out,"metalio_wav_out",kTaskStackBytes,this,kOutputPriority,&outputTask,kTaskCaps)!=pdPASS){outputTask=nullptr;err("WAV output task creation failed");return false;}return true;}
+  bool start(const char*p){
+    if(!p||!*p){err("Invalid audio path");return false;}
+    bool busy=false;
+    { std::lock_guard<std::mutex>l(mutex); busy=running||readerTask||outputTask; if(!busy){path=p;stopRequested=false;success=false;failed=false;running=true;error[0]=0;} }
+    if(busy){err("Audio playback already running");return false;}
+    if(!alloc()||!tasks()){requestStop();waitTasks(5000);codec.stopOutput();destroy();{std::lock_guard<std::mutex>l(mutex);running=false;}return false;}
+    LOG_INF(kTag,"WAV reader/output tasks started");return true;
   }
-
-  void run() {
-    HalFile file;
-    std::string pathCopy;
-
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      pathCopy = taskPath;
-    }
-
-    file = Storage.open(
-        pathCopy.c_str(),
-        O_RDONLY);
-
-    if (!file.isOpen()) {
-      LOG_ERR(
-          kTag,
-          "open failed: %s",
-          pathCopy.c_str());
-
-      setError("Cannot open audio file");
-      finish(false);
-      return;
-    }
-
-    WavInfo wav;
-
-    if (!parseWav(file, wav)) {
-      LOG_ERR(
-          kTag,
-          "unsupported WAV: %s",
-          pathCopy.c_str());
-
-      setError(
-          "WAV must be PCM/mono/16k/16-bit");
-
-      finish(false);
-      return;
-    }
-
-    if (fileBuffer == nullptr) {
-      setError(
-          "PSRAM buffer allocation failed");
-
-      finish(false);
-      return;
-    }
-
-    LOG_INF(
-        kTag,
-        "WAV stream: path=%s size=%u data=%u "
-        "rate=%u ch=%u bits=%u",
-        pathCopy.c_str(),
-        static_cast<unsigned>(file.fileSize()),
-        static_cast<unsigned>(wav.dataBytes),
-        static_cast<unsigned>(wav.sampleRate),
-        static_cast<unsigned>(wav.channels),
-        static_cast<unsigned>(wav.bitsPerSample));
-
-    LOG_INF(
-        kTag,
-        "PSRAM WAV buffer=%p bytes=%u external=%d",
-        fileBuffer,
-        static_cast<unsigned>(kFileBufferBytes),
-        esp_ptr_external_ram(fileBuffer) ? 1 : 0);
-
-    if (!file.seek(wav.dataOffset)) {
-      setError("WAV data seek failed");
-      finish(false);
-      return;
-    }
-
-    std::size_t remaining = wav.dataBytes;
-    std::size_t totalSamples = 0;
-
-    while (remaining > 0) {
-      if (shouldStop()) {
-        setError("Playback stopped");
-        finish(false);
-        return;
-      }
-
-      const std::size_t bytesToRead =
-          std::min(
-              remaining,
-              kFileBufferBytes);
-
-      const int n =
-          file.read(
-              fileBuffer,
-              bytesToRead);
-
-      if (n <= 0) {
-        LOG_ERR(
-            kTag,
-            "WAV stream: SD read failed");
-
-        setError("SD read failed");
-        finish(false);
-        return;
-      }
-
-      if ((static_cast<std::size_t>(n) &
-           (sizeof(int16_t) - 1)) != 0) {
-        setError("Odd WAV data length");
-        finish(false);
-        return;
-      }
-
-      const std::size_t samples =
-          static_cast<std::size_t>(n) /
-          sizeof(int16_t);
-
-      // Use the same synchronous playback path
-      // that was proven by the successful OGG
-      // in-RAM speaker test.
-      //
-      // Only this 32 KiB window is resident in
-      // PSRAM; the WAV remains on SD.
-      if (!metalio_audio_service::playPcm(
-              reinterpret_cast<const int16_t*>(
-                  fileBuffer),
-              samples,
-              3000)) {
-        LOG_ERR(
-            kTag,
-            "WAV stream aborted: audio output failed "
-            "at sample=%u",
-            static_cast<unsigned>(totalSamples));
-
-        metalio_audio_service::flushPlayback();
-        metalio_audio_service::stop();
-
-        setError("Audio output failed");
-        finish(false);
-        return;
-      }
-
-      totalSamples += samples;
-      remaining -= static_cast<std::size_t>(n);
-    }
-
-    LOG_INF(
-        kTag,
-        "WAV stream finished: samples=%u "
-        "duration_ms=%u",
-        static_cast<unsigned>(totalSamples),
-        static_cast<unsigned>(
-            (static_cast<uint64_t>(totalSamples) *
-             1000ULL) /
-            16000ULL));
-
-    finish(true);
-  }
-
-  void finish(bool result) {
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-
-      success = result;
-      running = false;
-      task = nullptr;
-    }
-
-    cv.notify_all();
-  }
-
-  bool start(const char* path) {
-    if (path == nullptr || path[0] == '\0') {
-      setError("Invalid audio path");
-      return false;
-    }
-
-    std::lock_guard<std::mutex> lifecycle(mutex);
-
-    if (running || task != nullptr) {
-      setError(
-          "Audio playback already running");
-      return false;
-    }
-
-    if (!metalio_audio_service::start()) {
-      setError("Audio service start failed");
-      return false;
-    }
-
-    if (fileBuffer == nullptr) {
-      fileBuffer = static_cast<uint8_t*>(
-          heap_caps_malloc(
-              kFileBufferBytes,
-              MALLOC_CAP_SPIRAM |
-                  MALLOC_CAP_8BIT));
-
-      if (fileBuffer == nullptr) {
-        setError(
-            "PSRAM file buffer allocation failed");
-        return false;
-      }
-    }
-
-    taskPath = path;
-    stopRequested = false;
-    success = false;
-    running = true;
-    error[0] = '\0';
-
-    if (xTaskCreateWithCaps(
-            taskEntry,
-            "metalio_file",
-            kTaskStackBytes,
-            this,
-            kTaskPriority,
-            &task,
-            kTaskCaps) != pdPASS) {
-      running = false;
-      task = nullptr;
-      setError(
-          "File playback task creation failed");
-      return false;
-    }
-
-    LOG_INF(
-        kTag,
-        "file playback task started");
-
-    return true;
-  }
-
-  void requestStop() {
-    std::lock_guard<std::mutex> lock(mutex);
-    stopRequested = true;
-  }
+  void requestStop(){std::lock_guard<std::mutex>l(mutex);stopRequested=true;}
+  bool waitTasks(uint32_t ms){auto d=std::chrono::steady_clock::now()+std::chrono::milliseconds(ms);while(readerTask||outputTask){if(std::chrono::steady_clock::now()>=d)return false;vTaskDelay(pdMS_TO_TICKS(10));}return true;}
+  void stop(){requestStop();waitTasks(10000);codec.stopOutput();if(!readerTask&&!outputTask){std::lock_guard<std::mutex>l(mutex);running=false;destroy();}cv.notify_all();}
 };
-
-Player::Player()
-    : impl_(new Impl()) {}
-
-Player::~Player() {
-  stop();
-  delete impl_;
-}
-
-bool Player::playWav(const char* path) {
-  return impl_ != nullptr &&
-         impl_->start(path);
-}
-
-bool Player::wait(uint32_t timeoutMs) {
-  if (impl_ == nullptr) {
-    return false;
-  }
-
-  std::unique_lock<std::mutex> lock(
-      impl_->mutex);
-
-  const bool done =
-      impl_->cv.wait_for(
-          lock,
-          std::chrono::milliseconds(timeoutMs),
-          [this] {
-            return !impl_->running;
-          });
-
-  return done && impl_->success;
-}
-
-void Player::stop() {
-  if (impl_ == nullptr) {
-    return;
-  }
-
-  impl_->requestStop();
-
-  std::unique_lock<std::mutex> lock(
-      impl_->mutex);
-
-  impl_->cv.wait_for(
-      lock,
-      std::chrono::milliseconds(3000),
-      [this] {
-        return !impl_->running;
-      });
-
-  if (impl_->fileBuffer != nullptr) {
-    heap_caps_free(
-        impl_->fileBuffer);
-
-    impl_->fileBuffer = nullptr;
-  }
-}
-
-bool Player::isPlaying() const {
-  if (impl_ == nullptr) {
-    return false;
-  }
-
-  std::lock_guard<std::mutex> lock(
-      impl_->mutex);
-
-  return impl_->running;
-}
-
-bool Player::lastSuccess() const {
-  if (impl_ == nullptr) {
-    return false;
-  }
-
-  std::lock_guard<std::mutex> lock(
-      impl_->mutex);
-
-  return impl_->success;
-}
-
-const char* Player::lastError() const {
-  if (impl_ == nullptr) {
-    return "Player unavailable";
-  }
-
-  std::lock_guard<std::mutex> lock(
-      impl_->mutex);
-
-  return impl_->error;
-}
-
-}  // namespace metalio_audio_file_player
-
+Player::Player():impl_(new Impl()){}
+Player::~Player(){stop();delete impl_;}
+bool Player::playWav(const char*p){return impl_&&impl_->start(p);}
+bool Player::wait(uint32_t ms){if(!impl_)return false;std::unique_lock<std::mutex>l(impl_->mutex);bool done=impl_->cv.wait_for(l,std::chrono::milliseconds(ms),[this]{return !impl_->running;});return done&&impl_->success;}
+void Player::stop(){if(impl_)impl_->stop();}
+bool Player::isPlaying()const{if(!impl_)return false;std::lock_guard<std::mutex>l(impl_->mutex);return impl_->running;}
+bool Player::lastSuccess()const{if(!impl_)return false;std::lock_guard<std::mutex>l(impl_->mutex);return impl_->success;}
+const char*Player::lastError()const{if(!impl_)return "Player unavailable";std::lock_guard<std::mutex>l(impl_->mutex);return impl_->error;}
+} // namespace metalio_audio_file_player
 #else
-
-namespace metalio_audio_file_player {
-
-Player::Player()
-    : impl_(nullptr) {}
-
-Player::~Player() = default;
-
-bool Player::playWav(const char*) {
-  return false;
-}
-
-bool Player::wait(uint32_t) {
-  return false;
-}
-
-void Player::stop() {}
-
-bool Player::isPlaying() const {
-  return false;
-}
-
-bool Player::lastSuccess() const {
-  return false;
-}
-
-const char* Player::lastError() const {
-  return "Metalio E-INK4 only";
-}
-
-}  // namespace metalio_audio_file_player
-
+namespace metalio_audio_file_player { Player::Player():impl_(nullptr){} Player::~Player()=default; bool Player::playWav(const char*){return false;} bool Player::wait(uint32_t){return false;} void Player::stop(){} bool Player::isPlaying()const{return false;} bool Player::lastSuccess()const{return false;} const char*Player::lastError()const{return "Metalio E-INK4 only";} }
 #endif
