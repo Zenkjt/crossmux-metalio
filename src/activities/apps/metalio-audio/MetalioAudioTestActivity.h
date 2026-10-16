@@ -23,7 +23,7 @@ class MetalioAudioTestActivity final : public UiListActivity {
   }
 
   const char* headerTitle() const override {
-    return "Metalio Audio Test";
+    return "Music Player";
   }
 
   void buildScreen(UiScreen& screen) override;
