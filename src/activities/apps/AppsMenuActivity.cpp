@@ -51,7 +51,7 @@ constexpr AppEntry kAppEntries[] = {
     {AppId::Calculator, StrId::STR_CALCULATOR_TITLE, UIIcon::Calculator, &ActivityManager::goToCalculator},
     {AppId::Woodfish, StrId::STR_WOODFISH_TITLE, UIIcon::Woodfish, &ActivityManager::goToWoodfish},
     #if FREEINK_DEVICE_METALIO_EINK4
-    {AppId::MetalioAudioTest, StrId::STR_SOUND_FEEDBACK, UIIcon::Blocks, &ActivityManager::goToMetalioAudioTest},
+    {AppId::MetalioAudioTest, StrId::STR_MUSIC_PLAYER, UIIcon::Blocks, &ActivityManager::goToMetalioAudioTest},
 #endif
     {AppId::Standby, StrId::STR_STANDBY_TITLE, UIIcon::Standby, &ActivityManager::goToStandby},
 };
