@@ -625,7 +625,7 @@ struct Player::Impl {
         int dataUsed = 0;
         int samples = 0;
 
-        short** output = nullptr;
+        float** output = nullptr;
 
 
         if (used > 0) {
@@ -720,11 +720,24 @@ struct Player::Impl {
                         offset);
 
 
-            std::memcpy(
-                block.data,
-                output[0] + offset,
-                count *
-                    sizeof(int16_t));
+            const std::size_t count =
+                static_cast<std::size_t>(samples) - offset;
+
+            for (std::size_t i = 0; i < count; ++i) {
+                float sample = output[0][offset + i];
+
+                if (sample > 1.0f) {
+                   sample = 1.0f;
+                } else if (sample < -1.0f) {
+                   sample = -1.0f;
+                }
+
+    block.data[i] =
+        static_cast<int16_t>(sample * 32767.0f);
+}
+
+block.samples = count;
+block.end = false;
 
 
             block.samples = count;
